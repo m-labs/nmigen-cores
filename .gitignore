@@ -3,5 +3,6 @@
 /*.egg-info
 /.eggs
 
-# nMigen
+# tests
 *.vcd
+*.gtkw
