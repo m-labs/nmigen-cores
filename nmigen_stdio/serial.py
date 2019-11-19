@@ -1,6 +1,6 @@
 from nmigen import *
 from nmigen.lib.cdc import MultiReg
-from nmigen.tools import bits_for
+from nmigen.utils import bits_for
 
 
 __all__ = ["AsyncSerialRX", "AsyncSerialTX", "AsyncSerial"]
@@ -56,12 +56,17 @@ class AsyncSerialRX(Elaboratable):
 
         self._pins = pins
 
+        self.timer = Signal.like(self.divisor)
+        self.shreg = Record(_wire_layout(len(self.data), self._parity))
+        self.bitno = Signal(range(len(self.shreg)))
+
+
     def elaborate(self, platform):
         m = Module()
 
-        timer = Signal.like(self.divisor)
-        shreg = Record(_wire_layout(len(self.data), self._parity))
-        bitno = Signal.range(len(shreg))
+        timer = self.timer
+        shreg = self.shreg
+        bitno = self.bitno
 
         if self._pins is not None:
             m.d.submodules += MultiReg(self._pins.rx.i, self.i, reset=1)
@@ -71,7 +76,7 @@ class AsyncSerialRX(Elaboratable):
                 with m.If(~self.i):
                     m.d.sync += [
                         bitno.eq(len(shreg) - 1),
-                        timer.eq(self.divisor >> 1),
+                        timer.eq(self.divisor >> 1)
                     ]
                     m.next = "BUSY"
 
@@ -82,7 +87,7 @@ class AsyncSerialRX(Elaboratable):
                     m.d.sync += [
                         shreg.eq(Cat(self.i, shreg)),
                         bitno.eq(bitno - 1),
-                        timer.eq(self.divisor),
+                        timer.eq(self.divisor)
                     ]
                     with m.If(bitno == 0):
                         m.next = "DONE"
@@ -93,7 +98,7 @@ class AsyncSerialRX(Elaboratable):
                         self.data.eq(shreg.data),
                         self.err.frame .eq(~((shreg.start == 0) & (shreg.stop == 1))),
                         self.err.parity.eq(~(shreg.parity ==
-                                             _compute_parity_bit(shreg.data, self._parity))),
+                                             _compute_parity_bit(shreg.data, self._parity)))
                     ]
                 m.d.sync += self.err.overflow.eq(~self.ack)
                 m.next = "IDLE"
@@ -115,43 +120,55 @@ class AsyncSerialTX(Elaboratable):
         self.rdy  = Signal()
         self.ack  = Signal()
 
-        self.o    = Signal()
+        self.o    = Signal(reset=1)
 
         self._pins = pins
+        
+        self.timer = Signal.like(self.divisor)
+        self.shreg = Record(_wire_layout(len(self.data), self._parity))
+        self.bitno = Signal(range(len(self.shreg)))
+
 
     def elaborate(self, platform):
         m = Module()
 
-        timer = Signal.like(self.divisor)
-        shreg = Record(_wire_layout(len(self.data), self._parity))
-        bitno = Signal.range(len(shreg))
+        timer = self.timer
+        shreg = self.shreg 
+        bitno = self.bitno
+
+        shreg_sent = Signal.like(shreg)
 
         if self._pins is not None:
             m.d.comb += self._pins.tx.o.eq(self.o)
 
-        with m.FSM():
+        with m.FSM() as fsm:
             with m.State("IDLE"):
                 m.d.comb += self.rdy.eq(1)
-                m.d.sync += self.o.eq(shreg[0])
                 with m.If(self.ack):
                     m.d.sync += [
                         shreg.start .eq(0),
                         shreg.data  .eq(self.data),
                         shreg.parity.eq(_compute_parity_bit(self.data, self._parity)),
                         shreg.stop  .eq(1),
+                        self.o.eq(shreg.start),
                         bitno.eq(len(shreg) - 1),
-                        timer.eq(self.divisor),
+                        timer.eq(self.divisor)
                     ]
                     m.next = "BUSY"
 
             with m.State("BUSY"):
+                # Copy shreg.data, shreg.parity, shreg.stop to shreg_sent
+                with m.If((bitno == len(shreg) - 1) &
+                          (timer == self.divisor)):
+                    m.d.sync += shreg_sent.eq(Cat(0, shreg[:-1]))
                 with m.If(timer != 0):
                     m.d.sync += timer.eq(timer - 1)
                 with m.Else():
                     m.d.sync += [
-                        Cat(self.o, shreg).eq(shreg),
+                        self.o.eq(shreg_sent[-1]),
+                        shreg_sent.eq(Cat(0, shreg_sent[:-1])),
                         bitno.eq(bitno - 1),
-                        timer.eq(self.divisor),
+                        timer.eq(self.divisor)
                     ]
                     with m.If(bitno == 0):
                         m.next = "IDLE"
