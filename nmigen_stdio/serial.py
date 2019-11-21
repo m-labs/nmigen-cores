@@ -49,8 +49,11 @@ class AsyncSerialRX(Elaboratable):
             ("frame",    1),
             ("parity",   1),
         ])
+        # rx.rdy: Internally driven, to indicate if received data is ready to be read
         self.rdy  = Signal()
+        # rx.ack: Externally driven, to indicate if transfer of received data is enabled
         self.ack  = Signal()
+        self.busy = Signal()
 
         self.i    = Signal(reset=1)
 
@@ -59,6 +62,7 @@ class AsyncSerialRX(Elaboratable):
         self.timer = Signal.like(self.divisor)
         self.shreg = Record(_wire_layout(len(self.data), self._parity))
         self.bitno = Signal(range(len(self.shreg)))
+        self.done_once = Signal()
 
 
     def elaborate(self, platform):
@@ -67,6 +71,7 @@ class AsyncSerialRX(Elaboratable):
         timer = self.timer
         shreg = self.shreg
         bitno = self.bitno
+        done_once = self.done_once
 
         if self._pins is not None:
             m.d.submodules += MultiReg(self._pins.rx.i, self.i, reset=1)
@@ -76,32 +81,59 @@ class AsyncSerialRX(Elaboratable):
                 with m.If(~self.i):
                     m.d.sync += [
                         bitno.eq(len(shreg) - 1),
-                        timer.eq(self.divisor >> 1)
+                        timer.eq(self.divisor >> 1),
+                        self.busy.eq(1)
                     ]
                     m.next = "BUSY"
 
             with m.State("BUSY"):
                 with m.If(timer != 0):
                     m.d.sync += timer.eq(timer - 1)
-                with m.Else():
-                    m.d.sync += [
-                        shreg.eq(Cat(self.i, shreg)),
-                        bitno.eq(bitno - 1),
-                        timer.eq(self.divisor)
-                    ]
-                    with m.If(bitno == 0):
+                with m.If(((timer == 0) & (bitno != 0)) | ((timer == 1) & (bitno == 0))):
+                    m.d.sync += shreg.eq(Cat(self.i, shreg))
+                    with m.If(bitno != 0):
+                        m.d.sync += [
+                            bitno.eq(bitno - 1),
+                            timer.eq(self.divisor)
+                        ]
+                    with m.Else():
                         m.next = "DONE"
 
             with m.State("DONE"):
-                with m.If(self.ack):
+                with m.If(~done_once & (timer == 0)):
+                    with m.If(self.ack):
+                        m.d.sync += [
+                            self.data.eq(shreg.data),
+                            self.err.frame .eq(~((shreg.start == 0) & (shreg.stop == 1))),
+                            self.err.parity.eq(~(shreg.parity ==
+                                                 _compute_parity_bit(shreg.data, self._parity)))
+                        ]
                     m.d.sync += [
-                        self.data.eq(shreg.data),
-                        self.err.frame .eq(~((shreg.start == 0) & (shreg.stop == 1))),
-                        self.err.parity.eq(~(shreg.parity ==
-                                             _compute_parity_bit(shreg.data, self._parity)))
+                        self.err.overflow.eq(~self.ack),
+                        self.busy.eq(0)
                     ]
-                m.d.sync += self.err.overflow.eq(~self.ack)
-                m.next = "IDLE"
+                    # At second clock edge for DONE,
+                    # bitno remains -1, while timer is set as divisor
+                    m.d.sync += [
+                        timer.eq(self.divisor),
+                        done_once.eq(1)
+                    ]
+                # Continue the timer to receive one more bit
+                # Set back to IDLE if it is still stop bit
+                with m.If(timer != 0):
+                    m.d.sync += timer.eq(timer - 1)
+                with m.Elif(done_once):
+                    m.d.sync += done_once.eq(0)
+                    with m.If(~self.i):
+                        m.d.sync += [
+                            shreg.eq(Cat(self.i, shreg)),
+                            bitno.eq(len(shreg) - 1),
+                            timer.eq(self.divisor),
+                            self.busy.eq(1)
+                        ]
+                        m.next = "BUSY"
+                    with m.Else():
+                        m.next = "IDLE"
 
         with m.If(self.ack):
             m.d.sync += self.rdy.eq(fsm.ongoing("DONE"))
@@ -117,8 +149,11 @@ class AsyncSerialTX(Elaboratable):
         self.divisor = Signal(divisor_bits or bits_for(divisor), reset=divisor)
 
         self.data = Signal(data_bits)
+        # rx.rdy: Internally driven, to indicate if data transmission can start
         self.rdy  = Signal()
+        # rx.ack: Externally driven, to indicate if transfer of data to transmit is enabled
         self.ack  = Signal()
+        self.busy = Signal()
 
         self.o    = Signal(reset=1)
 
@@ -152,7 +187,8 @@ class AsyncSerialTX(Elaboratable):
                         shreg.stop  .eq(1),
                         self.o.eq(shreg.start),
                         bitno.eq(len(shreg) - 1),
-                        timer.eq(self.divisor)
+                        timer.eq(self.divisor),
+                        self.busy.eq(1)
                     ]
                     m.next = "BUSY"
 
@@ -171,6 +207,7 @@ class AsyncSerialTX(Elaboratable):
                         timer.eq(self.divisor)
                     ]
                     with m.If(bitno == 0):
+                        m.d.sync += self.busy.eq(0)
                         m.next = "IDLE"
 
         return m
