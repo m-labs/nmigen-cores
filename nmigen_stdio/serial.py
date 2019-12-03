@@ -1,5 +1,5 @@
 from nmigen import *
-from nmigen.lib.cdc import MultiReg
+from nmigen.lib.cdc import FFSynchronizer
 from nmigen.utils import bits_for
 
 
@@ -74,7 +74,7 @@ class AsyncSerialRX(Elaboratable):
         done_once = self.done_once
 
         if self._pins is not None:
-            m.d.submodules += MultiReg(self._pins.rx.i, self.i, reset=1)
+            m.submodules += FFSynchronizer(self._pins.rx.i, self.i, reset=1)
 
         with m.FSM() as fsm:
             with m.State("IDLE"):
