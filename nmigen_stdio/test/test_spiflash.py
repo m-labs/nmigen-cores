@@ -18,11 +18,12 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
         for _ in range((yield self.dut.divisor) + 1):
             yield
 
-    class SuperNaiveDualFlash(Elaboratable):
-        def __init__(self, *, dut, data, data_size):
+    class SuperNaiveFlash(Elaboratable):
+        def __init__(self, *, dut, data, data_size, dummy_cycles):
             self.dut = dut
             self.data = data
             self.data_size = data_size
+            self.dummy_cycles = dummy_cycles
         def elaborate(self, platform):
             m = Module()
             data_sig = Signal(self.data_size)
@@ -32,13 +33,19 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
                                    depth=self.dut.data_width//self.dut.spi_width)
             stored_data_num_sent = Signal(range(stored_data.depth+1),
                                           reset=stored_data.depth)
-            dummy_counter = Signal(range(self.dut.dummy_cycles),
-                                   reset=self.dut.dummy_cycles - 1)
+            dummy_counter = Signal(range(self.dummy_cycles),
+                                   reset=self.dummy_cycles - 1)
             m.submodules.recv_data = recv_data
             m.submodules.stored_data = stored_data
-            m.d.comb += recv_data.w_data.eq(self.dut.dq.o)
+            if self.dut.spi_width == 1:
+                m.d.comb += recv_data.w_data.eq(self.dut.mosi)
+            else:
+                m.d.comb += recv_data.w_data.eq(self.dut.dq.o)
             with m.If(stored_data.r_rdy & stored_data.r_en):
-                m.d.sync += self.dut.dq.i.eq(stored_data.r_data)
+                if self.dut.spi_width == 1:
+                    m.d.sync += self.dut.miso.eq(stored_data.r_data)
+                else:
+                    m.d.sync += self.dut.dq.i.eq(stored_data.r_data)
             with m.FSM() as fsm:
                 with m.State("INIT"):
                     m.d.sync += data_sig.eq(self.data)
@@ -62,9 +69,9 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
                         ]
                     with m.Else():
                         m.d.comb += stored_data.w_en.eq(0)
-                    with m.If((dummy_counter != 1) & (self.dut.counter == 0)):
+                    with m.If((dummy_counter != 0) & (self.dut.counter == 0)):
                         m.d.sync += dummy_counter.eq(dummy_counter - 1)
-                    with m.Elif((dummy_counter == 1) &
+                    with m.Elif((dummy_counter == 0) &
                                 (self.dut.counter == self.dut._divisor_val>>1+1)):
                         m.d.comb += stored_data.r_en.eq(1)
                         m.next = "RETURN-DATA"
@@ -75,30 +82,52 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
                         m.d.comb += stored_data.r_en.eq(0)
             return m
 
+    def test_n25q128a_extended(self):
+        self.cmd_dict = {"FAST_READ": 0x0b}
+        self.dummy_cycles_dict = {"FAST_READ": 8}
+        self.dut = SPIFlash(protocol="extended", 
+                            addr_width=24,
+                            data_width=8,
+                            cmd_width=8,
+                            cmd_dict=self.cmd_dict,
+                            dummy_cycles_dict=self.dummy_cycles_dict)
+        self.flash = (SPIFlashFastReadTestCase.
+                      SuperNaiveFlash(dut=self.dut,
+                                      data=0xAA,
+                                      data_size=8,
+                                      dummy_cycles=8))
+        self.simple_test()
+
     def test_n25q128a_dual(self):
         self.cmd_dict = {"FAST_READ": 0xbb}
+        self.dummy_cycles_dict = {"FAST_READ": 8}
         self.dut = SPIFlash(protocol="dual", 
                             addr_width=24,
                             data_width=8,
                             cmd_width=8,
-                            cmd_dict=self.cmd_dict)
+                            cmd_dict=self.cmd_dict,
+                            dummy_cycles_dict=self.dummy_cycles_dict)
         self.flash = (SPIFlashFastReadTestCase.
-                      SuperNaiveDualFlash(dut=self.dut,
-                                          data=0xAA,
-                                          data_size=8))
+                      SuperNaiveFlash(dut=self.dut,
+                                      data=0xAA,
+                                      data_size=8,
+                                      dummy_cycles=8))
         self.simple_test()
 
     def test_n25q128a_quad(self):
         self.cmd_dict = {"FAST_READ": 0xeb}
+        self.dummy_cycles_dict = {"FAST_READ": 10}
         self.dut = SPIFlash(protocol="quad", 
                             addr_width=24,
                             data_width=8,
                             cmd_width=8,
-                            cmd_dict=self.cmd_dict)
+                            cmd_dict=self.cmd_dict,
+                            dummy_cycles_dict=self.dummy_cycles_dict)
         self.flash = (SPIFlashFastReadTestCase.
-                      SuperNaiveDualFlash(dut=self.dut,
-                                          data=0xAA,
-                                          data_size=8))
+                      SuperNaiveFlash(dut=self.dut,
+                                      data=0xAA,
+                                      data_size=8,
+                                      dummy_cycles=10))
         self.simple_test()
 
     def simple_test(self):
