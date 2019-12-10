@@ -41,26 +41,15 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
                 m.d.comb += recv_data.w_data.eq(self.dut.mosi)
             else:
                 m.d.comb += recv_data.w_data.eq(self.dut.dq.o)
-            with m.If(stored_data.r_rdy & stored_data.r_en):
-                if self.dut.spi_width == 1:
-                    m.d.sync += self.dut.miso.eq(stored_data.r_data)
-                else:
-                    m.d.sync += self.dut.dq.i.eq(stored_data.r_data)
-            with m.Else():
-                if self.dut.spi_width == 1:
-                    m.d.sync += self.dut.miso.eq(0)
-                else:
-                    m.d.sync += self.dut.dq.i.eq(0)
             with m.FSM() as fsm:
                 with m.State("INIT"):
                     m.d.sync += data_sig.eq(self.data)
                     with m.If(self.dut.cs):
-                        # Set w_en 1 clock earlier
-                        with m.If(self.dut.counter == 1):
+                        with m.If(self.dut.counter == self.dut._divisor_val >> 1):
                             m.d.comb += recv_data.w_en.eq(1)
                         with m.Else():
                             m.d.comb += recv_data.w_en.eq(0)
-                        with m.If(~recv_data.w_rdy & stored_data.w_rdy):
+                        with m.If(~recv_data.w_rdy & stored_data.w_rdy & (self.dut.counter == 0)):
                             m.next = "PUT-DATA"
                 with m.State("PUT-DATA"): 
                     with m.If(stored_data_num_left != 0):
@@ -76,12 +65,11 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
                         m.d.comb += stored_data.w_en.eq(0)
                     with m.If((dummy_counter != 0) & (self.dut.counter == 0)):
                         m.d.sync += dummy_counter.eq(dummy_counter - 1)
-                    with m.Elif((dummy_counter == 0) &
-                                (self.dut.counter == self.dut._divisor_val>>1+1)):
+                    with m.Elif((dummy_counter == 0) & (self.dut.counter == 0)):
                         m.d.comb += stored_data.r_en.eq(1)
                         m.next = "RETURN-DATA"
                 with m.State("RETURN-DATA"):
-                    with m.If(self.dut.counter == self.dut._divisor_val>>1+1):
+                    with m.If(self.dut.counter == 0):
                         m.d.comb += stored_data.r_en.eq(1)
                     with m.Else():
                         m.d.comb += stored_data.r_en.eq(0)
@@ -97,12 +85,23 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
                         ]
                     with m.Else():
                         m.d.comb += stored_data.w_en.eq(0)
+            with m.If(stored_data.r_rdy & stored_data.r_en):
+                if self.dut.spi_width == 1:
+                    m.d.sync += self.dut.miso.eq(stored_data.r_data)
+                else:
+                    m.d.sync += self.dut.dq.i.eq(stored_data.r_data)
+            with m.Elif(~fsm.ongoing("RETURN-DATA")):
+                if self.dut.spi_width == 1:
+                    m.d.sync += self.dut.miso.eq(0)
+                else:
+                    m.d.sync += self.dut.dq.i.eq(0)
             return m
 
     def test_extended(self):
         self.dut = SPIFlashFastReader(protocol="extended", 
                                       addr_width=24,
                                       data_width=32,
+                                      divisor=49,
                                       dummy_cycles=15)
         self.flash = (SPIFlashFastReadTestCase.
                       SuperNaiveFlash(dut=self.dut,
@@ -115,6 +114,7 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
         self.dut = SPIFlashFastReader(protocol="dual", 
                                       addr_width=24,
                                       data_width=32,
+                                      divisor=49,
                                       dummy_cycles=15)
         self.flash = (SPIFlashFastReadTestCase.
                       SuperNaiveFlash(dut=self.dut,
@@ -127,6 +127,7 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
         self.dut = SPIFlashFastReader(protocol="quad", 
                                       addr_width=24,
                                       data_width=32,
+                                      divisor=49,
                                       dummy_cycles=15)
         self.flash = (SPIFlashFastReadTestCase.
                       SuperNaiveFlash(dut=self.dut,
@@ -147,4 +148,8 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
             while not (yield self.dut.r_rdy):
                 yield       # Wait until it enters RDYWAIT state
             self.assertEqual((yield self.dut.r_data), self.flash.data)
+            # simulate continuous reading, informally
+            yield self.dut.ack.eq(1)
+            for _ in range(10*self.dut._divisor_val):
+                yield
         simulation_test(m, process)

@@ -79,7 +79,6 @@ class SPIFlashFastReader(Elaboratable):
         if protocol == "extended":
             self.mosi = Signal()
             self.miso = Signal()
-            # TODO: Add wp & hold pins
         elif protocol == "dual":
             self.dq = Pin(2, "io")
         elif protocol == "quad":
@@ -101,7 +100,10 @@ class SPIFlashFastReader(Elaboratable):
 
     def _add_clk_primitive(self, platform, module):
         """Add a submodule whose instantiation is required by certain devices
-        when choosing a user clock as SPI clock
+        when choosing a user clock as SPI clock.
+
+        Note that the CLK pin is not connected outside of this function, 
+        as certain devices does not need to request the CLK pin.
         """
         # Lattice ECP5:
         # "The ECP5 and ECP5-5G devices provide a solution for users 
@@ -110,8 +112,10 @@ class SPIFlashFastReader(Elaboratable):
         # (see Section 6.1.2 of FPGA-TN-02039-1.7, 
         #  "ECP5 and ECP5-5G sysCONFIG Usage Guide Technical Note")
         if self._device == "lattice_ecp5":
+            usrmclk = Signal.like(self.clk)
+            module.d.comb += usrmclk.eq(self.clk)
             module.submodules += Instance("USRMCLK",
-                                          i_USRMCLKI=self._pins.clk,
+                                          i_USRMCLKI=usrmclk,
                                           i_USRMCLKTS=0)
 
 
@@ -125,7 +129,8 @@ class SPIFlashFastReader(Elaboratable):
             self._add_clk_primitive(platform, m)
             m.d.comb += [
                 self._pins.cs.o.eq(self.cs),
-                self._pins.clk.eq(self.clk)
+                self._pins.wp.eq(1),
+                self._pins.hold.eq(1)
             ]
             if self._protocol == "extended":
                 m.submodules += FFSynchronizer(self._pins.miso.i, self.miso)
@@ -173,18 +178,18 @@ class SPIFlashFastReader(Elaboratable):
         with m.If(counter == 0):
             m.d.sync += [
                 self.clk.eq(0),
-                self.counter.eq(self.divisor)
+                counter.eq(self.divisor)
             ]
-            m.d.sync += shreg.eq(Cat(dq_i, shreg[:-self.spi_width]))    # "pushing" old data out from the left
+            # MOSI latches from shreg by "pushing" old data out from the left of shreg
+            m.d.sync += shreg.eq(Cat(dq_i, shreg[:-self.spi_width]))
         ## Normal countdown
         with m.Else():
             m.d.sync += counter.eq(counter - 1)
 
         # MOSI logic for Extended SPI protocol:
-        # Whenever ACKed, MOSI always output the leftmost bit of shreg
+        # MOSI always output the leftmost bit of shreg
         if self._protocol == "extended":
-            with m.If(self.ack):
-                m.d.comb += self.mosi.eq(shreg[-1])
+            m.d.comb += self.mosi.eq(shreg[-1])
         # MOSI logic for Dual and Quad SPI protocols:
         # Whenever DQ output should be enabled, 
         # DQ always output the leftmost `spi_width`-wide bits of shreg
@@ -216,7 +221,6 @@ class SPIFlashFastReader(Elaboratable):
                 with m.If(self.ack & (counter == 0)):
                     m.d.sync += [
                         state_counter.eq(0),
-                        self.cs.eq(1),
                         shreg[-self.cmd_width:].eq(fcmd)
                     ]
                     if self._protocol in ["dual", "quad"]:
@@ -246,7 +250,6 @@ class SPIFlashFastReader(Elaboratable):
                 with m.If(state_counter == state_durations["FASTREAD-WAITREAD"] - 1):
                     m.d.sync += [
                         state_counter.eq(0),
-                        self.cs.eq(0),
                         self.r_rdy.eq(1)
                     ]
                     m.next = "FASTREAD-RDYWAIT"
@@ -262,6 +265,11 @@ class SPIFlashFastReader(Elaboratable):
                     m.next = "FASTREAD-IDLE"
                 with m.Else():
                     m.d.sync += state_counter.eq(state_counter + 1)
+        # 
+        with m.If(~fsm.ongoing("FASTREAD-IDLE") & ~fsm.ongoing("FASTREAD-RDYWAIT")):
+            m.d.comb += self.cs.eq(1)
+        with m.Else():
+            m.d.comb += self.cs.eq(0)
 
         """
         ### SCRAPPED: other commands should be implemented in a separate core
