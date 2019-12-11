@@ -46,8 +46,8 @@ class SPIFlashFastReader(Elaboratable):
             raise ValueError("Invalid SPI protocol {!r}; must be one of \"extended\", \"dual\", or \"quad\""
                              .format(protocol))
         self._protocol = protocol
-        self.addr_width = addr_width
-        self.data_width = data_width
+        self._addr_width = addr_width
+        self._data_width = data_width
         self._dummy_cycles = dummy_cycles
 
         if divisor < 1:
@@ -87,14 +87,14 @@ class SPIFlashFastReader(Elaboratable):
         self.rdy = Signal()             # Internal rdy signal, set at idle state
         self.ack = Signal()             # External ack signal that begins a read
         self.addr = Signal(addr_width)
-        self.r_data = Signal(self.data_width)
+        self.r_data = Signal(self._data_width)
         self.r_rdy = Signal()           # 1 if r_data is valid, 0 otherwise
 
         self.cmd_width = SPIFlashFastReader.CMD_WIDTH
-        self.fcmd_width = self.cmd_width * self.spi_width
+        self._fcmd_width = self.cmd_width * self.spi_width
         # A two-way register storing the current value on the DQ I/O pins
         # (Note: DQ pins are both input/output only for Dual or Quad SPI protocols)
-        self.shreg = Signal(max(self.fcmd_width, self.addr_width, self.data_width))
+        self.shreg = Signal(max(self._fcmd_width, self._addr_width, self._data_width, self._dummy_cycles))
         self.counter = Signal.like(self.divisor)
 
 
@@ -167,7 +167,7 @@ class SPIFlashFastReader(Elaboratable):
         dq_i = Signal(self.spi_width)
         ## When countdown is half-way done, clock edge goes up (positive);
         ##     MISO starts latching bit/byte from slave
-        with m.If(counter == self._divisor_val >> 1):
+        with m.If((counter == self._divisor_val >> 1) & self.cs):
             m.d.sync += self.clk.eq(1)
             if self._protocol == "extended":
                 m.d.sync += dq_i.eq(self.miso)
@@ -175,7 +175,7 @@ class SPIFlashFastReader(Elaboratable):
                 m.d.sync += dq_i.eq(self.dq.i)
         ## When countdown reaches 0, clock edge goes down (negative)
         ##     shreg latches from MISO for r_data to read
-        with m.If(counter == 0):
+        with m.If((counter == 0) & self.cs):
             m.d.sync += [
                 self.clk.eq(0),
                 counter.eq(self.divisor)
@@ -183,7 +183,7 @@ class SPIFlashFastReader(Elaboratable):
             # MOSI latches from shreg by "pushing" old data out from the left of shreg
             m.d.sync += shreg.eq(Cat(dq_i, shreg[:-self.spi_width]))
         ## Normal countdown
-        with m.Else():
+        with m.Elif(self.cs):
             m.d.sync += counter.eq(counter - 1)
 
         # MOSI logic for Extended SPI protocol:
@@ -202,14 +202,14 @@ class SPIFlashFastReader(Elaboratable):
         # fcmd: get formatted command based on cmd_dict
         fcmd = self._format_cmd(SPIFlashFastReader.CMD_DICT[self._protocol])
         # addr: convert bus address to byte-sized address
-        byte_addr = Cat(Repl(0, log2_int(self.data_width//8)), self.addr)
+        byte_addr = Cat(Repl(0, log2_int(self._data_width//8)), self.addr)
         # FSM
         with m.FSM() as fsm:
             state_durations = {
                 "FASTREAD-CMD"     : self._divisor_val*(self.cmd_width//self.spi_width),
-                "FASTREAD-ADDR"    : self._divisor_val*(self.addr_width//self.spi_width),
+                "FASTREAD-ADDR"    : self._divisor_val*(self._addr_width//self.spi_width),
                 "FASTREAD-WAITREAD": self._divisor_val*(self._dummy_cycles+
-                                                        self.data_width//self.spi_width),
+                                                        self._data_width//self.spi_width),
                 "FASTREAD-RDYWAIT" : 1+self._divisor_val
             }
             max_duration = max([dur for state,dur in state_durations.items()])
@@ -218,7 +218,15 @@ class SPIFlashFastReader(Elaboratable):
             # State: Idling
             with m.State("FASTREAD-IDLE"):
                 m.d.comb += self.rdy.eq(1)
-                with m.If(self.ack & (counter == 0)):
+                with m.If(self.ack):
+                    m.d.sync += [
+                        counter.eq((self._divisor_val >> 1) - 1),
+                        self.clk.eq(1)
+                    ]
+                    m.next = "FASTREAD-CS"
+            # State: Chip select
+            with m.State("FASTREAD-CS"):
+                with m.If(counter == 0):
                     m.d.sync += [
                         state_counter.eq(0),
                         shreg[-self.cmd_width:].eq(fcmd)
@@ -231,7 +239,7 @@ class SPIFlashFastReader(Elaboratable):
                 with m.If(state_counter == state_durations["FASTREAD-CMD"] - 1):
                     m.d.sync += [
                         state_counter.eq(0),
-                        shreg[-self.addr_width:].eq(byte_addr)
+                        shreg[-self._addr_width:].eq(byte_addr)
                     ]
                     m.next = "FASTREAD-ADDR"
                 with m.Else():
@@ -239,9 +247,13 @@ class SPIFlashFastReader(Elaboratable):
             # State: Address, MOSI
             with m.State("FASTREAD-ADDR"):
                 with m.If(state_counter == state_durations["FASTREAD-ADDR"] - 1):
-                    m.d.sync += state_counter.eq(0)
-                    if self._protocol in ["dual", "quad"]:
-                        m.d.sync += dq_oe.eq(0)
+                    #m.d.sync += state_counter.eq(0)
+                    #if self._protocol in ["dual", "quad"]:
+                    #    m.d.sync += dq_oe.eq(0)
+                    m.d.sync += [
+                        state_counter.eq(0),
+                        shreg[-self._dummy_cycles:].eq(Repl(0, self._dummy_cycles))
+                    ]
                     m.next = "FASTREAD-WAITREAD"
                 with m.Else():
                     m.d.sync += state_counter.eq(state_counter + 1)
@@ -252,6 +264,8 @@ class SPIFlashFastReader(Elaboratable):
                         state_counter.eq(0),
                         self.r_rdy.eq(1)
                     ]
+                    if self._protocol in ["dual", "quad"]:
+                        m.d.sync += dq_oe.eq(0)
                     m.next = "FASTREAD-RDYWAIT"
                 with m.Else():
                     m.d.sync += state_counter.eq(state_counter + 1)
@@ -266,7 +280,8 @@ class SPIFlashFastReader(Elaboratable):
                 with m.Else():
                     m.d.sync += state_counter.eq(state_counter + 1)
         # 
-        with m.If(~fsm.ongoing("FASTREAD-IDLE") & ~fsm.ongoing("FASTREAD-RDYWAIT")):
+        with m.If(~fsm.ongoing("FASTREAD-IDLE") & 
+                  ~fsm.ongoing("FASTREAD-RDYWAIT")):
             m.d.comb += self.cs.eq(1)
         with m.Else():
             m.d.comb += self.cs.eq(0)

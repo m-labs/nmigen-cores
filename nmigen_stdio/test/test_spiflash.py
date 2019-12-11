@@ -28,9 +28,9 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
             m = Module()
             data_sig = Signal(self.data_size)
             recv_data = SyncFIFO(width=self.dut.spi_width,
-                                 depth=(self.dut.cmd_width+self.dut.addr_width)//self.dut.spi_width)
+                                 depth=(self.dut.cmd_width+self.dut._addr_width)//self.dut.spi_width)
             stored_data = SyncFIFO(width=self.dut.spi_width,
-                                   depth=self.dut.data_width//self.dut.spi_width)
+                                   depth=self.dut._data_width//self.dut.spi_width)
             stored_data_num_left = Signal(range(stored_data.depth+1),
                                           reset=stored_data.depth)
             dummy_counter = Signal(range(self.dummy_cycles),
