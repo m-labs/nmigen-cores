@@ -161,7 +161,7 @@ class AsyncSerialTX(Elaboratable):
         
         self.timer = Signal.like(self.divisor)
         self.shreg = Record(_wire_layout(len(self.data), self._parity))
-        self.bitno = Signal(range(len(self.shreg)))
+        self.bitno = Signal(range(len(self.shreg)+1))
 
 
     def elaborate(self, platform):
@@ -170,8 +170,6 @@ class AsyncSerialTX(Elaboratable):
         timer = self.timer
         shreg = self.shreg 
         bitno = self.bitno
-
-        shreg_sent = Signal.like(shreg)
 
         if self._pins is not None:
             m.d.comb += self._pins.tx.o.eq(self.o)
@@ -185,24 +183,19 @@ class AsyncSerialTX(Elaboratable):
                         shreg.data  .eq(self.data),
                         shreg.parity.eq(_compute_parity_bit(self.data, self._parity)),
                         shreg.stop  .eq(1),
-                        self.o.eq(shreg.start),
-                        bitno.eq(len(shreg) - 1),
-                        timer.eq(self.divisor),
+                        bitno.eq(len(self.shreg)),
+                        timer.eq(0),
                         self.busy.eq(1)
                     ]
                     m.next = "BUSY"
 
             with m.State("BUSY"):
-                # Copy shreg.data, shreg.parity, shreg.stop to shreg_sent
-                with m.If((bitno == len(shreg) - 1) &
-                          (timer == self.divisor)):
-                    m.d.sync += shreg_sent.eq(Cat(0, shreg[:-1]))
                 with m.If(timer != 0):
                     m.d.sync += timer.eq(timer - 1)
                 with m.Else():
                     m.d.sync += [
-                        self.o.eq(shreg_sent[-1]),
-                        shreg_sent.eq(Cat(0, shreg_sent[:-1])),
+                        self.o.eq(shreg[-1]),
+                        shreg.eq(Cat(0, shreg[:-1])),
                         bitno.eq(bitno - 1),
                         timer.eq(self.divisor)
                     ]
@@ -217,8 +210,8 @@ class AsyncSerial(Elaboratable):
     def __init__(self, *, divisor, divisor_bits=None, **kwargs):
         self.divisor = Signal(divisor_bits or bits_for(divisor), reset=divisor)
 
-        self.rx = AsyncSerialRX(**kwargs)
-        self.tx = AsyncSerialTX(**kwargs)
+        self.rx = AsyncSerialRX(divisor=divisor, divisor_bits=divisor_bits, **kwargs)
+        self.tx = AsyncSerialTX(divisor=divisor, divisor_bits=divisor_bits, **kwargs)
 
     def elaborate(self, platform):
         m = Module()

@@ -189,7 +189,8 @@ class AsyncSerialLoopbackSpec(Elaboratable):
                 Assume(rx_fsm.ongoing("RX-1"))
             ]
         # Assertions
-        with m.If(Past(rx_fsm.state) == rx_fsm.encoding["CHECK"]):
+        with m.If((Past(rx_fsm.state) == rx_fsm.encoding["CHECK"]) &
+                  ~Stable(rx_fsm.state)):
             m.d.comb += [
                 Assert(rx_fsm.ongoing("DONE")),
                 Assert(tx_fsm.ongoing("DONE"))
@@ -379,6 +380,10 @@ class AsyncSerialBitstreamSpec(Elaboratable):
             elif self.parity == "odd":
                 m.d.comb += Assert((fv_tx_bitstream_val[1] == ~fv_rx_data.xor()))
             m.d.comb += Assert(~fv_tx_overflow)
+            if self.parity == "none":
+                m.d.comb += Assert(fv_rx_data == fv_tx_bitstream_val[1:-1])
+            else:
+                m.d.comb += Assert(fv_rx_data == fv_tx_bitstream_val[2:-1])
 
         with m.Elif(rx_fsm.ongoing("ERROR")):
             with m.If(rx.err.frame):
