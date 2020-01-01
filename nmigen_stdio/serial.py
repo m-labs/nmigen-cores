@@ -43,6 +43,42 @@ def _wire_layout(data_bits, parity="none"):
 
 
 class AsyncSerialRX(Elaboratable):
+    """Asynchronous serial receiver.
+
+    Parameters
+    ----------
+    divisor : int
+        Clock divisor reset value. Set to ``round(clk-rate / baud-rate)``.
+        E.g. ``12e6 / 115200`` = ``104``.
+    divisor_bits : int
+        Optional. Clock divisor width. If omitted, ``bits_for(divisor)`` is used instead.
+    data_bits : int
+        Data width.
+    parity : ``"none"``, ``"mark"``, ``"space"``, ``"even"``, ``"odd"``
+        Parity mode.
+    pins : :class:`Record`
+        Optional. UART pins. See :class:`UARTResource` in nmigen-boards.
+
+    Attributes
+    ----------
+    divisor : Signal, in
+        Clock divisor.
+    data : Signal, out
+        Read data. Valid only when ``rdy`` is asserted.
+    err.overflow : Signal, out
+        Error flag. A new frame has been received, but the previous one was not acknowledged.
+    err.frame : Signal, out
+        Error flag. The received bits do not fit in a frame.
+    err.parity : Signal, out
+        Error flag. The parity check has failed.
+    rdy : Signal, out
+        Read strobe.
+    ack : Signal, in
+        Read acknowledge. Must be held asserted while data can be read out of the receiver.
+    i : Signal, in
+        Serial input. If ``pins`` has been specified, ``pins.rx.i`` drives it.
+
+    """
     def __init__(self, *, divisor, divisor_bits=None, data_bits=8, parity="none", pins=None):
         _check_parity(parity)
         self._parity = parity
@@ -112,6 +148,36 @@ class AsyncSerialRX(Elaboratable):
 
 
 class AsyncSerialTX(Elaboratable):
+    """Asynchronous serial transmitter.
+
+    Parameters
+    ----------
+    divisor : int
+        Clock divisor reset value. Set to ``round(clk-rate / baud-rate)``.
+        E.g. ``12e6 / 115200`` = ``104``.
+    divisor_bits : int
+        Optional. Clock divisor width. If omitted, ``bits_for(divisor)`` is used instead.
+    data_bits : int
+        Data width.
+    parity : ``"none"``, ``"mark"``, ``"space"``, ``"even"``, ``"odd"``
+        Parity mode.
+    pins : :class:`Record`
+        Optional. UART pins. See :class:`UARTResource` in nmigen-boards.
+
+    Attributes
+    ----------
+    divisor : Signal, in
+        Clock divisor.
+    data : Signal, in
+        Write data. Valid only when ``ack`` is asserted.
+    rdy : Signal, out
+        Write ready. Asserted when the transmitter is ready to transmit data.
+    ack : Signal, in
+        Write strobe. Data gets transmitted when ``rdy`` and ``ack`` are simultaneously asserted.
+    o : Signal, out
+        Serial output. If ``pins`` has been specified, it drives ``pins.tx.o``.
+
+    """
     def __init__(self, *, divisor, divisor_bits=None, data_bits=8, parity="none", pins=None):
         _check_parity(parity)
         self._parity = parity
@@ -168,6 +234,30 @@ class AsyncSerialTX(Elaboratable):
 
 
 class AsyncSerial(Elaboratable):
+    """Asynchronous serial transceiver.
+
+    Parameters
+    ----------
+    divisor : int
+        Clock divisor reset value. Set to ``round(clk-rate / baud-rate)``.
+        E.g. ``12e6 / 115200`` = ``104``.
+    divisor_bits : int
+        Optional. Clock divisor width. If omitted, ``bits_for(divisor)`` is used instead.
+    data_bits : int
+        Data width.
+    parity : ``"none"``, ``"mark"``, ``"space"``, ``"even"``, ``"odd"``
+        Parity mode.
+    pins : :class:`Record`
+        Optional. UART pins. See :class:`UARTResource` in nmigen-boards.
+
+    Attributes
+    ----------
+    rx : :class:`AsyncSerialRX`
+        See :class:`AsyncSerialRX`.
+    tx : :class:`AsyncSerialTX`
+        See :class:`AsyncSerialTX`.
+
+    """
     def __init__(self, *, divisor, divisor_bits=None, **kwargs):
         self.divisor = Signal(divisor_bits or bits_for(divisor), reset=divisor)
 
