@@ -101,8 +101,14 @@ class AsyncSerialRXTestCase(unittest.TestCase):
             yield from self.tx_bits([0, 1,0,1,0,1,0,1,0, 1,
                                      0, 0,1,0,1,0,1,0,1, 1])
             yield from self.tx_period()
-            self.assertEqual((yield from self.fifo.read()), 0xAA)
-            self.assertEqual((yield from self.fifo.read()), 0x55)
+            self.assertTrue((yield self.fifo.r_rdy))
+            self.assertEqual((yield self.fifo.r_data), 0xAA)
+            yield self.fifo.r_en.eq(1)
+            yield
+            yield
+            while not (yield self.fifo.r_rdy):
+                yield
+            self.assertEqual((yield self.fifo.r_data), 0x55)
             yield
             self.assertFalse((yield self.fifo.r_rdy))
         simulation_test(m, process)

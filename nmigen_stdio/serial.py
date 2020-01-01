@@ -1,6 +1,6 @@
 from nmigen import *
-from nmigen.lib.cdc import MultiReg
-from nmigen.tools import bits_for
+from nmigen.lib.cdc import FFSynchronizer
+from nmigen.utils import bits_for
 
 
 __all__ = ["AsyncSerialRX", "AsyncSerialTX", "AsyncSerial"]
@@ -61,10 +61,10 @@ class AsyncSerialRX(Elaboratable):
 
         timer = Signal.like(self.divisor)
         shreg = Record(_wire_layout(len(self.data), self._parity))
-        bitno = Signal.range(len(shreg))
+        bitno = Signal(range(len(shreg)))
 
         if self._pins is not None:
-            m.d.submodules += MultiReg(self._pins.rx.i, self.i, reset=1)
+            m.submodules += FFSynchronizer(self._pins.rx.i, self.i, reset=1)
 
         with m.FSM() as fsm:
             with m.State("IDLE"):
@@ -124,7 +124,7 @@ class AsyncSerialTX(Elaboratable):
 
         timer = Signal.like(self.divisor)
         shreg = Record(_wire_layout(len(self.data), self._parity))
-        bitno = Signal.range(len(shreg))
+        bitno = Signal(range(len(shreg)))
 
         if self._pins is not None:
             m.d.comb += self._pins.tx.o.eq(self.o)
