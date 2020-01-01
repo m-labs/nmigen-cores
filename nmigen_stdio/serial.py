@@ -163,8 +163,8 @@ class AsyncSerial(Elaboratable):
     def __init__(self, *, divisor, divisor_bits=None, **kwargs):
         self.divisor = Signal(divisor_bits or bits_for(divisor), reset=divisor)
 
-        self.rx = AsyncSerialRX(**kwargs)
-        self.tx = AsyncSerialTX(**kwargs)
+        self.rx = AsyncSerialRX(divisor=divisor, divisor_bits=divisor_bits, **kwargs)
+        self.tx = AsyncSerialTX(divisor=divisor, divisor_bits=divisor_bits, **kwargs)
 
     def elaborate(self, platform):
         m = Module()
