@@ -82,7 +82,7 @@ class AsyncSerialRX(Elaboratable):
                     m.d.sync += [
                         shreg.eq(Cat(shreg[1:], self.i)),
                         bitno.eq(bitno - 1),
-                        timer.eq(self.divisor),
+                        timer.eq(self.divisor - 1),
                     ]
                     with m.If(bitno == 0):
                         m.next = "DONE"

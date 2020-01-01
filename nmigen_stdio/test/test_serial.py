@@ -15,7 +15,7 @@ def simulation_test(dut, process):
 
 class AsyncSerialRXTestCase(unittest.TestCase):
     def tx_period(self):
-        for _ in range((yield self.dut.divisor) + 1):
+        for _ in range((yield self.dut.divisor)):
             yield
 
     def tx_bits(self, bits):
@@ -82,6 +82,7 @@ class AsyncSerialRXTestCase(unittest.TestCase):
             self.assertFalse((yield self.dut.rdy))
             yield from self.tx_bits([0, 0,0,0,0,0,0,0,0, 1])
             yield from self.tx_period()
+            yield
             self.assertFalse((yield self.dut.rdy))
             self.assertTrue((yield self.dut.err.overflow))
         simulation_test(self.dut, process)
@@ -100,7 +101,6 @@ class AsyncSerialRXTestCase(unittest.TestCase):
         def process():
             yield from self.tx_bits([0, 1,0,1,0,1,0,1,0, 1,
                                      0, 0,1,0,1,0,1,0,1, 1])
-            yield from self.tx_period()
             self.assertTrue((yield self.fifo.r_rdy))
             self.assertEqual((yield self.fifo.r_data), 0x55)
             yield self.fifo.r_en.eq(1)
