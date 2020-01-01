@@ -29,10 +29,10 @@ def _compute_parity_bit(data, parity):
 
 def _wire_layout(data_bits, parity="none"):
     return [
-        ("stop",   1),
-        ("parity", 0 if parity == "none" else 1),
-        ("data",   data_bits),
         ("start",  1),
+        ("data",   data_bits),
+        ("parity", 0 if parity == "none" else 1),
+        ("stop",   1),
     ]
 
 
@@ -80,7 +80,7 @@ class AsyncSerialRX(Elaboratable):
                     m.d.sync += timer.eq(timer - 1)
                 with m.Else():
                     m.d.sync += [
-                        shreg.eq(Cat(self.i, shreg)),
+                        shreg.eq(Cat(shreg[1:], self.i)),
                         bitno.eq(bitno - 1),
                         timer.eq(self.divisor),
                     ]
