@@ -115,7 +115,7 @@ class AsyncSerialTX(Elaboratable):
         self.rdy  = Signal()
         self.ack  = Signal()
 
-        self.o    = Signal()
+        self.o    = Signal(reset=1)
 
         self._pins = pins
 
@@ -132,7 +132,6 @@ class AsyncSerialTX(Elaboratable):
         with m.FSM():
             with m.State("IDLE"):
                 m.d.comb += self.rdy.eq(1)
-                m.d.sync += self.o.eq(shreg[0])
                 with m.If(self.ack):
                     m.d.sync += [
                         shreg.start .eq(0),
@@ -140,7 +139,6 @@ class AsyncSerialTX(Elaboratable):
                         shreg.parity.eq(_compute_parity_bit(self.data, self._parity)),
                         shreg.stop  .eq(1),
                         bitno.eq(len(shreg) - 1),
-                        timer.eq(self.divisor),
                     ]
                     m.next = "BUSY"
 
@@ -148,12 +146,14 @@ class AsyncSerialTX(Elaboratable):
                 with m.If(timer != 0):
                     m.d.sync += timer.eq(timer - 1)
                 with m.Else():
-                    m.d.sync += [
-                        Cat(self.o, shreg).eq(shreg),
-                        bitno.eq(bitno - 1),
-                        timer.eq(self.divisor),
-                    ]
-                    with m.If(bitno == 0):
+                    m.d.sync += Cat(self.o, shreg).eq(shreg)
+                    with m.If(bitno != 0):
+                        m.d.sync += [
+                            bitno.eq(bitno - 1),
+                            timer.eq(self.divisor - 1),
+                        ]
+                    with m.Else():
+                        m.d.sync += timer.eq(self.divisor - 2)
                         m.next = "IDLE"
 
         return m
