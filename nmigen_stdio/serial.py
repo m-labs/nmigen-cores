@@ -6,6 +6,12 @@ from nmigen.utils import bits_for
 __all__ = ["AsyncSerialRX", "AsyncSerialTX", "AsyncSerial"]
 
 
+def _check_divisor(divisor, bound):
+    if divisor < bound:
+        raise ValueError("Invalid divisor {!r}; must be greater than or equal to {}"
+                         .format(divisor, bound))
+
+
 def _check_parity(parity):
     choices = ("none", "mark", "space", "even", "odd")
     if parity not in choices:
@@ -41,6 +47,7 @@ class AsyncSerialRX(Elaboratable):
         _check_parity(parity)
         self._parity = parity
 
+        _check_divisor(divisor, 5)
         self.divisor = Signal(divisor_bits or bits_for(divisor), reset=divisor)
 
         self.data = Signal(data_bits)
@@ -109,6 +116,7 @@ class AsyncSerialTX(Elaboratable):
         _check_parity(parity)
         self._parity = parity
 
+        _check_divisor(divisor, 2)
         self.divisor = Signal(divisor_bits or bits_for(divisor), reset=divisor)
 
         self.data = Signal(data_bits)
