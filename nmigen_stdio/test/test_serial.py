@@ -82,12 +82,14 @@ class AsyncSerialRXTestCase(unittest.TestCase):
 
     def test_err_overflow(self):
         self.dut = AsyncSerialRX(divisor=7)
+
         def process():
             self.assertFalse((yield self.dut.rdy))
             yield from self.tx_bits([0, 0,0,0,0,0,0,0,0, 1])
             yield from self.tx_period()
             self.assertFalse((yield self.dut.rdy))
             self.assertTrue((yield self.dut.err.overflow))
+
         simulation_test(self.dut, process)
 
 
@@ -104,7 +106,7 @@ class AsyncSerialTXTestCase(unittest.TestCase):
             yield self.dut.ack.eq(0)
             for _ in range(10):
                 yield from self.tx_period()
-            yield from self.tx_period() # Check 1 more period
+            yield from self.tx_period()     # Check 1 more period
         simulation_test(self.dut, process)
 
     def test_8n1(self):
@@ -225,15 +227,15 @@ class AsyncSerialLoopbackSpec(Elaboratable):
                 Assert(rx_fsm.ongoing("DONE")),
                 Assert(tx_fsm.ongoing("DONE"))
             ]
-        ## RX r_rdy
+        # RX r_rdy
         with m.If(Past(rx.busy, 2) & ~Stable(rx.busy, 1)):
             m.d.comb += Assert(rx.r_rdy)
         with m.If(Stable(rx.r_rdy) & rx.r_rdy):
-            m.d.comb += Assert(Stable(rx.data) & 
+            m.d.comb += Assert(Stable(rx.data) &
                                Stable(rx.err.overflow) &
                                Stable(rx.err.frame) &
                                Stable(rx.err.parity))
-        ## TX w_done
+        # TX w_done
         with m.If(Past(tx.busy) & ~Stable(tx.busy)):
             m.d.comb += Assert(tx.w_done)
 
@@ -243,7 +245,9 @@ class AsyncSerialLoopbackSpec(Elaboratable):
 class AsyncSerialLoopbackTestCase(FHDLTestCase):
     def check_formal(self, *, divisor, data_bits, parity):
         depth = (divisor+1) * (data_bits+(3 if parity!="none" else 2) + 2)
-        self.assertFormal(AsyncSerialLoopbackSpec(divisor=divisor, data_bits=data_bits, parity=parity),
+        self.assertFormal(AsyncSerialLoopbackSpec(divisor=divisor,
+                                                  data_bits=data_bits,
+                                                  parity=parity),
                           mode="bmc", depth=depth)
 
     def test_all_div7(self):
@@ -290,18 +294,20 @@ class AsyncSerialBitstreamSpec(Elaboratable):
             ResetSignal("sync").eq(0),
             ResetSignal("txclk").eq(0)
         ]
-        
+
         # Assumptions for TX
         fv_tx_bitstream_val = AnyConst(len_bitstream)
         # Assume the bitstream doesn't have 1-bit delay
         m.d.comb += Assume(fv_tx_bitstream_val[0] != 1)
         fv_tx_bitstream = Signal(len_bitstream+1)
-        fv_tx_extra_bit = AnyConst(1)       # A const bit representing the extra bit after the bitstream
-        fv_tx_overflow = AnyConst(1)        # A const flag to determine if the rx_fifo is always full
+        fv_tx_extra_bit = AnyConst(1)       # A const bit representing
+                                            #     the extra bit after the bitstream
+        fv_tx_overflow = AnyConst(1)        # A const flag to determine if
+                                            #     the rx_fifo is always full
         fv_tx_bitno = Signal(range(len(fv_tx_bitstream)+1))
         fv_tx_timer = Signal.like(rx.divisor)
         fv_rx_data = Signal(self.data_bits)
-        # 
+        #
         fv_txfifo_num_bits = Signal(range(len(fv_tx_bitstream)+2))
         with m.FSM(domain="txclk") as txfifo_fsm:
             with m.State("WRITE-PREP"):
@@ -322,7 +328,7 @@ class AsyncSerialBitstreamSpec(Elaboratable):
                     m.d.txclk += txbit_fifo.w_en.eq(0)
                     m.next = "DONE"
         txfifo_fsm.state.name = "fv_txfifo_fsm_state"
-        # 
+        #
         fv_tx_extra_done = Signal()
         with m.FSM(domain="txclk") as tx_fsm:
             with m.State("TX-PREP"):
@@ -394,11 +400,11 @@ class AsyncSerialBitstreamSpec(Elaboratable):
         # Assertions
         with m.If(Past(rx_fsm.state) == rx_fsm.encoding["CHECK"]):
             m.d.comb += Assert(rx_fsm.ongoing("DONE") | rx_fsm.ongoing("ERROR"))
-        ## RX r_rdy
+        # RX r_rdy
         with m.If(Past(rx.busy, 2) & ~Stable(rx.busy, 1)):
             m.d.comb += Assert(rx.r_rdy)
         with m.If(Stable(rx.r_rdy) & rx.r_rdy):
-            m.d.comb += Assert(Stable(rx.data) & 
+            m.d.comb += Assert(Stable(rx.data) &
                                Stable(rx.err.overflow) &
                                Stable(rx.err.frame) &
                                Stable(rx.err.parity))
@@ -454,7 +460,9 @@ class AsyncSerialBitstreamSpec(Elaboratable):
 class AsyncSerialBitstreamTestCase(FHDLTestCase):
     def check_formal(self, *, divisor, data_bits, parity):
         depth = (divisor+1) * (data_bits+(3 if parity!="none" else 2) + 2)
-        self.assertFormal(AsyncSerialBitstreamSpec(divisor=divisor, data_bits=data_bits, parity=parity),
+        self.assertFormal(AsyncSerialBitstreamSpec(divisor=divisor,
+                                                   data_bits=data_bits,
+                                                   parity=parity),
                           mode="bmc", depth=depth)
 
     def test_all_div7(self):

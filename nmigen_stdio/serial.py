@@ -59,14 +59,12 @@ class AsyncSerialRX(Elaboratable):
         self.r_rdy  = Signal()
 
         self.i    = Signal(reset=1)
-
         self._pins = pins
 
         self.timer = Signal.like(self.divisor)
         self.shreg = Record(_wire_layout(len(self.data), self._parity))
         self.bits_left = Signal(range(len(self.shreg) + 1))
         self.done = Signal()
-
 
     def elaborate(self, platform):
         m = Module()
@@ -161,19 +159,17 @@ class AsyncSerialTX(Elaboratable):
         self.w_done  = Signal()
 
         self.o    = Signal(reset=1)
-
         self._pins = pins
-        
+
         self.timer = Signal.like(self.divisor)
         self.shreg = Record(_wire_layout(len(self.data), self._parity))
         self.bits_left = Signal(range(len(self.shreg) + 1))
-
 
     def elaborate(self, platform):
         m = Module()
 
         timer = self.timer
-        shreg = self.shreg 
+        shreg = self.shreg
         bits_left = self.bits_left
 
         if self._pins is not None:
