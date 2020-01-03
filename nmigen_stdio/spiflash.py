@@ -19,7 +19,6 @@ class _SPIFlashReaderBase:
         "quad"    : None
     }
 
-
     def _format_cmd(self):
         """
         Returns the values on all the DQ lines that corresponds to the command.
@@ -27,7 +26,7 @@ class _SPIFlashReaderBase:
         Since everything is transmitted on all DQ lines (command, address and data),
         the input cmd_value is extended/interleaved to full DQ width
         even if DQ1-DQ3 are "don't care" during the command phase:
-        
+
         eg:    1    1    1    0    1    0    1    1   (extended SPI mode)
               11   11   11   10   11   10   11   11   (dual I/O SPI mode)
             1111 1111 1111 1110 1111 1110 1111 1111   (quad I/O SPI mode)
@@ -38,15 +37,15 @@ class _SPIFlashReaderBase:
                            .format(type(self).__name__, self._protocol))
         fcmd = 2**(type(self).CMD_WIDTH*self.spi_width) - 1
         for bit in range(type(self).CMD_WIDTH):
-            if (cmd_value >> bit)%2 == 0:
+            if (cmd_value >> bit) % 2 == 0:
                 fcmd &= ~(1 << (bit*self.spi_width))
         return fcmd
 
-
-    def __init__(self, *, protocol, data_width, 
+    def __init__(self, *, protocol, data_width,
                  divisor=1, device=None, pins=None):
         if protocol not in ["extended", "dual", "quad"]:
-            raise ValueError("Invalid SPI protocol {!r}; must be one of \"extended\", \"dual\", or \"quad\""
+            raise ValueError("Invalid SPI protocol {!r}; must be one of "
+                             "\"extended\", \"dual\", or \"quad\""
                              .format(protocol))
         self._protocol = protocol
         self._data_width = data_width
@@ -97,26 +96,6 @@ class _SPIFlashReaderBase:
         self.shreg = Signal(max(self._fcmd_width, self._data_width))
         self.counter = Signal.like(self.divisor)
 
-
-    def _add_clk_primitive(self, platform, module):
-        """Add a submodule whose instantiation is required by certain devices
-        when choosing a user clock as SPI clock.
-
-        Note that the CLK pin is not connected outside of this function, 
-        as certain devices does not need to request the CLK pin.
-        """
-        # Lattice ECP5:
-        # "The ECP5 and ECP5-5G devices provide a solution for users 
-        # to choose any user clock as MCLK under this scenario 
-        # by instantiating USRMCLK macro in your Verilog or VHDL."
-        # (see Section 6.1.2 of FPGA-TN-02039-1.7, 
-        #  "ECP5 and ECP5-5G sysCONFIG Usage Guide Technical Note")
-        if self._device == "lattice_ecp5":
-            module.submodules += Instance("USRMCLK",
-                                          i_USRMCLKI=self.clk,
-                                          i_USRMCLKTS=0)
-
-
     def _add_spi_hardware_logic(self, platform, module):
         """Add the foundamental hardware logic for controlling all SPI pins to be used
         """
@@ -124,18 +103,21 @@ class _SPIFlashReaderBase:
         counter = self.counter
 
         if self._pins is not None:
-            self._add_clk_primitive(platform, module)
             module.d.comb += [
                 self._pins.cs.o.eq(self.cs),
                 self._pins.wp.eq(0),
                 self._pins.hold.eq(0)
             ]
+            # Platforms that require declaration of a user SPI clock signal
+            # (e.g. by instantiating a USRMCLK Instance) must NOT pass a CLK on the SPI flash
+            if hasattr(self._pins, "clk"):
+                module.d.comb += self._pins.clk.o.eq(self.clk)
             if self._protocol == "extended":
                 module.submodules += FFSynchronizer(self._pins.miso.i, self.miso)
                 module.d.comb += self._pins.mosi.o.eq(self.mosi)
             elif self._protocol in ["dual", "quad"]:
                 dq_oe = Signal()
-                module.submodules.dq = platformodule.get_tristate(self.dq, self._pins.dq, None, False)
+                module.submodules.dq = platform.get_tristate(self.dq, self._pins.dq, None, False)
         # If the user doesn't give pins, create dq Pins for Dual & Quad
         else:
             if self._protocol in ["dual", "quad"]:
@@ -163,16 +145,16 @@ class _SPIFlashReaderBase:
         # Countdown logic for counter based on divisor
         # Also implements MISO logic
         dq_i = Signal(self.spi_width)
-        ## When countdown is half-way done, clock edge goes up (positive);
-        ##     MISO starts latching bit/byte from slave
+        # When countdown is half-way done, clock edge goes up (positive);
+        #     MISO starts latching bit/byte from slave
         with module.If((counter == self._divisor_val >> 1) & self.cs):
             module.d.sync += self.clk.eq(1)
             if self._protocol == "extended":
                 module.d.sync += dq_i.eq(self.miso)
             elif self._protocol in ["dual", "quad"]:
                 module.d.sync += dq_i.eq(self.dq.i)
-        ## When countdown reaches 0, clock edge goes down (negative)
-        ##     shreg latches from MISO for r_data to read
+        # When countdown reaches 0, clock edge goes down (negative)
+        #     shreg latches from MISO for r_data to read
         with module.If((counter == 0) & self.cs):
             module.d.sync += [
                 self.clk.eq(0),
@@ -180,7 +162,7 @@ class _SPIFlashReaderBase:
             ]
             # MOSI latches from shreg by "pushing" old data out from the left of shreg
             module.d.sync += shreg.eq(Cat(dq_i, shreg[:-self.spi_width]))
-        ## Normal countdown
+        # Normal countdown
         with module.Elif(self.cs):
             module.d.sync += counter.eq(counter - 1)
 
@@ -189,7 +171,7 @@ class _SPIFlashReaderBase:
         if self._protocol == "extended":
             module.d.comb += self.mosi.eq(shreg[-1])
         # MOSI logic for Dual and Quad SPI protocols:
-        # Whenever DQ output should be enabled, 
+        # Whenever DQ output should be enabled,
         # DQ always output the leftmost `spi_width`-wide bits of shreg
         elif self._protocol in ["dual", "quad"]:
             module.d.comb += [
@@ -200,7 +182,7 @@ class _SPIFlashReaderBase:
 
 class SPIFlashSlowReader(_SPIFlashReaderBase, Elaboratable):
     """An SPI flash controller module for normal reading
-    (i.e. only available in Extended protocol and a lower frequency, 
+    (i.e. only available in Extended protocol and a lower frequency,
     but no dummy cycles of waiting are required).
     """
     CMD_DICT = {
@@ -209,13 +191,11 @@ class SPIFlashSlowReader(_SPIFlashReaderBase, Elaboratable):
         "quad"    : None
     }
 
-
     def __init__(self, addr_width, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._addr_width = addr_width
         self.addr = Signal(addr_width)
         self.shreg = Signal(max(self._fcmd_width, self._data_width, self._addr_width))
-
 
     def elaborate(self, platform):
         m = Module()
@@ -231,12 +211,12 @@ class SPIFlashSlowReader(_SPIFlashReaderBase, Elaboratable):
         # FSM
         with m.FSM() as fsm:
             state_durations = {
-                "SLOWREAD-CMD"     : self._divisor_val*(self.cmd_width//self.spi_width),
-                "SLOWREAD-ADDR"    : self._divisor_val*(self._addr_width//self.spi_width),
-                "SLOWREAD-READ"    : self._divisor_val*(self._data_width//self.spi_width),
-                "SLOWREAD-RDYWAIT" : 1+self._divisor_val
+                "SLOWREAD-CMD"    : self._divisor_val*(self.cmd_width//self.spi_width),
+                "SLOWREAD-ADDR"   : self._divisor_val*(self._addr_width//self.spi_width),
+                "SLOWREAD-READ"   : self._divisor_val*(self._data_width//self.spi_width),
+                "SLOWREAD-RDYWAIT": 1+self._divisor_val
             }
-            max_duration = max([dur for state,dur in state_durations.items()])
+            max_duration = max([dur for state, dur in state_durations.items()])
             # A "count-up" counter for each state of the command
             state_counter = Signal(range(max_duration))
             # State: Idling
@@ -299,8 +279,8 @@ class SPIFlashSlowReader(_SPIFlashReaderBase, Elaboratable):
                     m.next = "SLOWREAD-IDLE"
                 with m.Else():
                     m.d.sync += state_counter.eq(state_counter + 1)
-        # 
-        with m.If(~fsm.ongoing("SLOWREAD-IDLE") & 
+        # Enable/Disable CS
+        with m.If(~fsm.ongoing("SLOWREAD-IDLE") &
                   ~fsm.ongoing("SLOWREAD-RDYWAIT")):
             m.d.comb += self.cs.eq(1)
         with m.Else():
@@ -311,7 +291,7 @@ class SPIFlashSlowReader(_SPIFlashReaderBase, Elaboratable):
 
 class SPIFlashFastReader(_SPIFlashReaderBase, Elaboratable):
     """An SPI flash controller module for fast-reading
-    (i.e. available in all SPI protocols and a higher frequency, 
+    (i.e. available in all SPI protocols and a higher frequency,
     but dummy cycles of waiting are required)
     """
     CMD_DICT = {
@@ -320,14 +300,12 @@ class SPIFlashFastReader(_SPIFlashReaderBase, Elaboratable):
         "quad"    : 0x6b
     }
 
-
     def __init__(self, addr_width, dummy_cycles, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._addr_width = addr_width
         self._dummy_cycles = dummy_cycles
         self.addr = Signal(addr_width)
         self.shreg = Signal(max(self._fcmd_width, self._data_width, self._addr_width))
-
 
     def elaborate(self, platform):
         m = Module()
@@ -349,7 +327,7 @@ class SPIFlashFastReader(_SPIFlashReaderBase, Elaboratable):
                                                         self._data_width//self.spi_width),
                 "FASTREAD-RDYWAIT" : 1+self._divisor_val
             }
-            max_duration = max([dur for state,dur in state_durations.items()])
+            max_duration = max([dur for state, dur in state_durations.items()])
             # A "count-up" counter for each state of the command
             state_counter = Signal(range(max_duration))
             # State: Idling
@@ -412,14 +390,11 @@ class SPIFlashFastReader(_SPIFlashReaderBase, Elaboratable):
                     m.next = "FASTREAD-IDLE"
                 with m.Else():
                     m.d.sync += state_counter.eq(state_counter + 1)
-        # 
-        with m.If(~fsm.ongoing("FASTREAD-IDLE") & 
+        # Enable/Disable CS
+        with m.If(~fsm.ongoing("FASTREAD-IDLE") &
                   ~fsm.ongoing("FASTREAD-RDYWAIT")):
             m.d.comb += self.cs.eq(1)
         with m.Else():
             m.d.comb += self.cs.eq(0)
 
         return m
-
-
-

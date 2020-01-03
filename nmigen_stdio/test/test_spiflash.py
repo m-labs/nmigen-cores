@@ -24,13 +24,15 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
             self.data = data
             self.data_size = data_size
             self.dummy_cycles = dummy_cycles
+
         def elaborate(self, platform):
             m = Module()
             data_sig = Signal(self.data_size)
             recv_data = SyncFIFO(width=self.dut.spi_width,
-                                 depth=(self.dut.cmd_width+self.dut._addr_width)//self.dut.spi_width)
+                                 depth=(self.dut.cmd_width+self.dut._addr_width) //
+                                       self.dut.spi_width)
             stored_data = SyncFIFO(width=self.dut.spi_width,
-                                   depth=self.dut._data_width//self.dut.spi_width)
+                                   depth=self.dut._data_width // self.dut.spi_width)
             stored_data_num_left = Signal(range(stored_data.depth+1),
                                           reset=stored_data.depth)
             dummy_counter = Signal(range(self.dummy_cycles),
@@ -51,7 +53,7 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
                             m.d.comb += recv_data.w_en.eq(0)
                         with m.If(~recv_data.w_rdy & stored_data.w_rdy & (self.dut.counter == 0)):
                             m.next = "PUT-DATA"
-                with m.State("PUT-DATA"): 
+                with m.State("PUT-DATA"):
                     with m.If(stored_data_num_left != 0):
                         m.d.comb += [
                             stored_data.w_en.eq(1),
@@ -59,7 +61,8 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
                         ]
                         m.d.sync += [
                             stored_data_num_left.eq(stored_data_num_left-1),
-                            data_sig.eq(Cat(Repl(0, self.dut.spi_width), data_sig[:-self.dut.spi_width]))
+                            data_sig.eq(Cat(Repl(0, self.dut.spi_width),
+                                            data_sig[:-self.dut.spi_width]))
                         ]
                     with m.Else():
                         m.d.comb += stored_data.w_en.eq(0)
@@ -81,7 +84,8 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
                         ]
                         m.d.sync += [
                             stored_data_num_left.eq(stored_data_num_left-1),
-                            data_sig.eq(Cat(Repl(0, self.dut.spi_width), data_sig[:-self.dut.spi_width]))
+                            data_sig.eq(Cat(Repl(0, self.dut.spi_width),
+                                        data_sig[:-self.dut.spi_width]))
                         ]
                     with m.Else():
                         m.d.comb += stored_data.w_en.eq(0)
@@ -98,7 +102,7 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
             return m
 
     def test_extended(self):
-        self.dut = SPIFlashFastReader(protocol="extended", 
+        self.dut = SPIFlashFastReader(protocol="extended",
                                       addr_width=24,
                                       data_width=32,
                                       divisor=49,
@@ -111,7 +115,7 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
         self.simple_test()
 
     def test_dual(self):
-        self.dut = SPIFlashFastReader(protocol="dual", 
+        self.dut = SPIFlashFastReader(protocol="dual",
                                       addr_width=24,
                                       data_width=32,
                                       divisor=49,
@@ -124,7 +128,7 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
         self.simple_test()
 
     def test_quad(self):
-        self.dut = SPIFlashFastReader(protocol="quad", 
+        self.dut = SPIFlashFastReader(protocol="quad",
                                       addr_width=24,
                                       data_width=32,
                                       divisor=49,
@@ -140,6 +144,7 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
         m = Module()
         m.submodules.master = self.dut
         m.submodules.slave  = self.flash
+
         def process():
             yield self.dut.ack.eq(1)
             while (yield self.dut.rdy):
@@ -152,4 +157,5 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
             yield self.dut.ack.eq(1)
             for _ in range(10*self.dut._divisor_val):
                 yield
+
         simulation_test(m, process)
