@@ -3,7 +3,7 @@ from nmigen import *
 from nmigen.hdl.rec import Direction
 
 
-__all__ = ["PHYEndpoint"]
+__all__ = ["Endpoint", "PHYEndpoint"]
 
 
 class _EndpointBase(Record):
@@ -16,6 +16,11 @@ class _EndpointBase(Record):
 	        ("param"  , param_layout)			# nested layout of the params, if any
 		]
 		Record.__init__(self, full_layout)
+
+
+class Endpoint(_EndpointBase):
+	def __init__(self, payload_layout, param_layout=[]):
+		self.init_record(payload_layout, param_layout)
 
 
 class PHYEndpoint(_EndpointBase):

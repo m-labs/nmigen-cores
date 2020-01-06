@@ -1,5 +1,8 @@
+import warnings
+
 from nmigen import *
 from nmigen.lib.io import Pin
+
 from .endpoint import *
 
 
@@ -7,17 +10,8 @@ __all__ = ["EthRGMIIRX", "EthRGMIITX"]
 
 
 class EthRGMIIRX(Elaboratable):
-    def __init__(self, *, data_width=8, device=None, pins=None):
-        self.data_width = data_width
-
-        supported_devices = ["lattice_ecp5"]
-        if device is not None and device not in supported_devices:
-            raise ValueError("Invalid FPGA device name {!r}; must be one of {}"
-                             .format(device, supported_devices))
-        self._device = device
-        if self._device is not None and pins is None:
-            raise ValueError("Pins parameter is missing for this FPGA device {}"
-                             .format(self._device))
+    def __init__(self, *, pins=None):
+        self.data_width = 8
         self._pins = pins
 
         self.rx_ctl    = Signal()
@@ -73,76 +67,45 @@ class EthRGMIIRX(Elaboratable):
                              o_Q1=self.rx_data_u[i+4])
                 ]
 
+        self.source = PHYEndpoint(data_width=self.data_width)
 
     def elaborate(self, platform):
         m = Module()
 
-        if self._pins is not None:
-            self._add_primitives(m)
-            m.domains.eth_rx = cd_eth_rx = ClockDomain()
-            m.d.comb += cd_eth_rx.clk.eq(self._pins.rx_clk)
+        if self._pins is None:
+            raise NotImplementedError("Currently does not support simulation")
 
-        # If the user doesn't give pins, create rx_ctl & rx_data DDR Pins
-        else:
-            rx_ctl_i    = Signal()
-            rx_ctl_iddr = Pin(1, dir="i", xdr=2)
-            m.d.comb += self.rx_ctl_u.eq(rx_ctl_iddr.i0)
-            # TODO: add DDR logic (latch i0 on posedge, i1 on negedge)
-            rx_data_i    = Signal(self.data_width//2)
-            rx_data_iddr = Pin(self.data_width//2, dir="i", xdr=2)
-            for i in range(self.data_width//2):
-                m.d.comb += [
-                    self.rx_data_u[i].eq(rx_data_iddr.i0[i]),
-                    self.rx_data_u[i+4].eq(rx_data_iddr.i1[i])
-                ]
-            # TODO: add DDR logic (latch i0 on posedge, i1 on negedge)
+        rx_ctl = Signal()
+        rx_data = Signal(8)
 
-        source = self.source
-
-        #
-        m.d.sync += [
-            self.rx_ctl.eq(self.rx_ctl_u),
-            self.rx_data.eq(self.rx_data_u)
+        m.d.eth_rx += [
+            rx_ctl.eq(self.rx_ctl_u),
+            rx_data.eq(self.rx_data_u)
         ]
 
         rx_ctl_d = Signal()
-        m.d.sync += [
-            rx_ctl_d.eq(self.rx_ctl),
-            source.stb.eq(self.rx_ctl),
-            source.payload.data.eq(
-                Cat(self.rx_data[:self.data_width//2],
-                    self.rx_data[self.data_width//2:])
-            )
+        m.d.eth_rx += [
+            rx_ctl_d.eq(rx_ctl),
+            self.source.stb.eq(rx_ctl),
+            self.source.payload.data.eq(rx_data)
         ]
-        m.d.comb += source.eop.eq(~self.rx_ctl & rx_ctl_d)
+        m.d.comb += self.source.eop.eq(~rx_ctl & rx_ctl_d)
 
         return m
 
 
 class EthRGMIITX(Elaboratable):
-    def __init__(self, *, data_width=8, device=None, pins=None):
-        self.data_width = data_width
+    def __init__(self, *, clk_domain=None, pins=None):
+        """A generic transmitter module for RGMII.
 
-        supported_devices = ["lattice_ecp5"]
-        if device is not None and device not in supported_devices:
-            raise ValueError("Invalid FPGA device name {!r}; must be one of {}"
-                             .format(device, supported_devices))
-        self._device = device
-        if self._device is not None and pins is None:
-            raise ValueError("Pins parameter is missing for this FPGA device {}"
-                             .format(self._device))
-        self._pins = pins
+        Note that this module does not implement any DDR modules, but provides
+        :class:`nmigen.lib.io.Pins` objects representing the signals to be used as
+        the inputs of those DDR modules. Using these signals are recommended.
 
-        self.tx_ctl    = Signal()
-        self.tx_ctl_u  = Signal.like(self.tx_ctl)
-        self.tx_data   = Signal(data_width)
-        self.tx_data_u = Signal.like(self.tx_data)
-
-        self.sink = PHYEndpoint(data_width=data_width)
-
-
-    def _add_primitives(self, module):
-        """Add submodules as required by certain devices
+        This module also has `o_clk`, representing the clock to be used as
+        the clock of the DDRs. However, the user should consider whether
+        using `o_clk` on all the TX-related DDRs is appropriate, especially because
+        some platforms require a skew between the TX clock and the TX data pins.
         """
         # Lattice ECP5:
         # (with reference to: https://github.com/enjoy-digital/liteeth/blob/master/liteeth/phy/ecp5rgmii.py)
@@ -187,47 +150,44 @@ class EthRGMIITX(Elaboratable):
                              o_Z=self._pins.tx_data[i])
                 ]
 
+        self.tx_clk_oddr = Pin(1, "o", xdr=2)
+        self.tx_ctl_oddr = Pin(1, "o", xdr=2)
+        self.tx_data_oddr = Pin(self.data_width//2, "o", xdr=2)
+
+        self.sink = PHYEndpoint(data_width=self.data_width)
 
     def elaborate(self, platform):
         m = Module()
 
-        if self._pins is not None:
-            self._add_primitives(m)
-        # If the user doesn't give pins, create rx_ctl & rx_data DDR Pins
-        else:
-            tx_ctl_o    = Signal()
-            tx_ctl_oddr = Pin(1, dir="o", xdr=2)
-            m.d.comb += [
-                tx_ctl_oddr.o0.eq(self.sink.stb),
-                tx_ctl_oddr.o1.eq(self.sink.stb)
-            ]
-            # TODO: add DDR logic (latch o0 on posedge, o1 on negedge)
-            tx_data_o    = Signal(self.data_width//2)
-            tx_data_oddr = Pin(self.data_width//2, dir="o", xdr=2)
-            for i in range(self.data_width//2):
-                m.d.comb += [
-                    tx_data_oddr.o0[i].eq(self.tx_data_u[i]),
-                    tx_data_oddr.o1[i].eq(self.tx_data_u[i+4])
-                ]
-            # TODO: add DDR logic (latch o0 on posedge, o1 on negedge)
+        if self._pins is None:
+            raise NotImplementedError("Currently does not support simulation")
 
-        #
-        sink = self.sink
-        m.d.comb += sink.rdy.eq(1)
+        m.d.comb += [
+            # DDR output for tx_clk
+            # (Note: often the device requires this output to be delayed
+            #        from the CTL/DATA clocks; the user should implement
+            #        a delay on the `o_clk` of this Pin, or
+            #        a delay on the output of a DDR module they write)
+            self.tx_clk_oddr.o_clk.eq(self.o_clk),
+            self.tx_clk_oddr.o0.eq(1),
+            self.tx_clk_oddr.o1.eq(0),
+            # DDR output for tx_ctl
+            self.tx_ctl_oddr.o_clk.eq(self.o_clk),
+            self.tx_ctl_oddr.o0.eq(self.sink.stb),
+            self.tx_ctl_oddr.o1.eq(self.sink.stb),
+            # DDR output for tx_data[3:0]
+            self.tx_data_oddr.o_clk.eq(self.o_clk),
+            self.tx_data_oddr.o0.eq(self.sink.payload.data[:self.data_width//2]),
+            self.tx_data_oddr.o1.eq(self.sink.payload.data[self.data_width//2:])
+        ]
+
+        m.d.comb += self.sink.rdy.eq(1)
 
         return m
 
 
 class EthRGMII(Elaboratable):
-    def __init__(self, *, data_width=8, device=None, pins=None, **kwargs):
-        supported_devices = ["lattice_ecp5"]
-        if device is not None and device not in supported_devices:
-            raise ValueError("Invalid FPGA device name {!r}; must be one of {}"
-                             .format(device, supported_devices))
-        self._device = device
-        if self._device is not None and pins is None:
-            raise ValueError("Pins parameter is missing for this FPGA device {}"
-                             .format(self._device))
+    def __init__(self, *, data_width=8, pins=None, **kwargs):
         self._pins = pins
 
         self.rx     = EthRGMIIRX(data_width=data_width,
@@ -270,24 +230,5 @@ class EthRGMII(Elaboratable):
         
         m.submodules.rx = rx = self.rx
         m.submodules.tx = tx = self.tx
-        self.source = rx.source
-        self.sink = tx.sink
-
-        m.domains.eth_tx = cd_eth_tx = ClockDomain()
-        cd_eth_tx.clk.eq(ClockSignal("eth_rx"))
-
-        if self._pins is not None:
-            self._add_primitives(m)
-        # If the user doesn't give pins, create rx_ctl & rx_data DDR Pins
-        else:
-            tx_clk_o    = Signal()
-            tx_clk_oddr = Pin(1, dir="o", xdr=2)
-            m.d.comb += [
-                tx_clk_oddr.o0.eq(1),
-                tx_clk_oddr.o1.eq(0)
-            ]
-            # TODO: add DDR logic (latch o0 on posedge, o1 on negedge)
-
-        # TODO: implement reset
 
         return m
