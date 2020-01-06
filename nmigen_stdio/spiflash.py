@@ -42,7 +42,7 @@ class _SPIFlashReaderBase:
         return fcmd
 
     def __init__(self, *, protocol, data_width,
-                 divisor=1, device=None, pins=None):
+                 divisor=1, pins=None):
         if protocol not in ["extended", "dual", "quad"]:
             raise ValueError("Invalid SPI protocol {!r}; must be one of "
                              "\"extended\", \"dual\", or \"quad\""
@@ -56,14 +56,6 @@ class _SPIFlashReaderBase:
         self.divisor = Signal(bits_for(divisor), reset=divisor)
         self._divisor_val = divisor + 1
 
-        supported_devices = ["lattice_ecp5"]
-        if device is not None and device not in supported_devices:
-            raise ValueError("Invalid FPGA device name {!r}; must be one of {}"
-                             .format(device, supported_devices))
-        self._device = device
-        if self._device is not None and pins is None:
-            raise ValueError("Pins parameter is missing for this FPGA device {}"
-                             .format(self._device))
         self._pins = pins
 
         if self._protocol == "extended":
