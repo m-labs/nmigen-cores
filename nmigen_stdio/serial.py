@@ -149,6 +149,9 @@ class AsyncSerialTX(Elaboratable):
         self._parity = parity
 
         self.divisor = Signal(divisor_bits or bits_for(divisor), reset=divisor)
+        # tx.continuous: Externally driven; no breaks between transmission of "packets" if asserted
+        #                Useful if ACK stays high until the entire transmission has ended
+        self.continuous = Signal(reset=0)
 
         self.data = Signal(data_bits)
         # tx.ack: Externally driven, to indicate if transfer of data to transmit is enabled
@@ -181,14 +184,49 @@ class AsyncSerialTX(Elaboratable):
                 with m.If(self.ack):
                     m.d.sync += [
                         self.o.eq(0),       # Issue start bit ASAP
+                        bits_left.eq(len(self.shreg)),
+                        timer.eq(self.divisor)
+                    ]
+                    # In continous mode, data is valid only at beginning of transmission
+                    # and after ACK is asserted
+                    with m.If(self.continuous):
+                        m.next = "LATCH-DATA"
+                    # In normal mode, data is valid at the same time as ACK is asserted
+                    with m.Else():
+                        m.d.sync += [
+                            shreg.start .eq(0),
+                            shreg.data  .eq(self.data),
+                            shreg.parity.eq(_compute_parity_bit(self.data, self._parity)),
+                            shreg.stop  .eq(1),
+                        ]
+                        m.next = "BUSY"
+
+            with m.State("LATCH-DATA"):
+                # In continuous mode, data is valid only at beginning of transmission;
+                # Latch the data either before timer reaches 0 on the first bit,
+                #   or, if timer is always 0 (i.e. divisor is 0),
+                #   latch the first data bit to output for the next clock directly
+                with m.If(self.divisor == 0):
+                    # On the next clock, do:
+                    m.d.sync += [
+                        self.o.eq(self.data[0]),    # Send data[0], and
+                        shreg.eq(Cat(               # Store to shreg:
+                            self.data[1:],                                  # data[1:]
+                            _compute_parity_bit(self.data, self._parity),   # parity
+                            1, 0, 0                                         # stop bit
+                        )) 
+                    ]
+                with m.Else():
+                    # On the next clock, latch the data to shreg and keep counting down
+                    m.d.sync += [
                         shreg.start .eq(0),
                         shreg.data  .eq(self.data),
                         shreg.parity.eq(_compute_parity_bit(self.data, self._parity)),
                         shreg.stop  .eq(1),
-                        bits_left.eq(len(self.shreg)),
-                        timer.eq(self.divisor)
+                        timer.eq(timer - 1)
                     ]
-                    m.next = "BUSY"
+                # Resume BUSY state
+                m.next = "BUSY"
 
             with m.State("BUSY"):
                 with m.If(timer != 0):
@@ -211,18 +249,14 @@ class AsyncSerialTX(Elaboratable):
                         m.next = "DONE"
 
             with m.State("DONE"):
-                # Accept next sequence if ACK is still high
-                with m.If(self.ack):
+                # In continuous mode, accept next sequence if ACK is still high
+                with m.If(self.ack & self.continuous):
                     m.d.sync += [
                         self.o.eq(0),       # Issue start bit ASAP
-                        shreg.start .eq(0),
-                        shreg.data  .eq(self.data),
-                        shreg.parity.eq(_compute_parity_bit(self.data, self._parity)),
-                        shreg.stop  .eq(1),
                         bits_left.eq(len(self.shreg)),
                         timer.eq(self.divisor)
                     ]
-                    m.next = "BUSY"
+                    m.next = "LATCH-DATA"
                 # Set back to IDLE if ACK is low
                 with m.Else():
                     m.d.sync += self.o.eq(1)
@@ -230,7 +264,7 @@ class AsyncSerialTX(Elaboratable):
 
         m.d.comb += [
             self.w_done.eq(fsm.ongoing("DONE")),
-            self.busy.eq(fsm.ongoing("BUSY"))
+            self.busy.eq(fsm.ongoing("LATCH-DATA") | fsm.ongoing("BUSY"))
         ]
 
         return m
