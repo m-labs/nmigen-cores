@@ -17,6 +17,7 @@ def simulation_test(dut, process):
         sim.run()
 
 
+# TODO: Add test cases for continuous RX
 class AsyncSerialRXTestCase(unittest.TestCase):
     def tx_period(self):
         for _ in range((yield self.dut.divisor) + 1):
@@ -29,10 +30,10 @@ class AsyncSerialRXTestCase(unittest.TestCase):
 
     def rx_test(self, bits, *, data=None, errors=None):
         def process():
-            self.assertFalse((yield self.dut.rdy))
+            self.assertFalse((yield self.dut.r_rdy))
             yield self.dut.ack.eq(1)
             yield from self.tx_bits(bits)
-            while not (yield self.dut.rdy):
+            while not (yield self.dut.r_rdy):
                 yield
             if data is not None:
                 self.assertFalse((yield self.dut.err))
@@ -45,35 +46,35 @@ class AsyncSerialRXTestCase(unittest.TestCase):
 
     def test_8n1(self):
         self.dut = AsyncSerialRX(divisor=7, data_bits=8, parity="none")
-        self.rx_test([0, 1,0,1,0,1,1,1,0, 1], data=0b10101110)
+        self.rx_test([0, 1,0,1,0,1,1,1,0, 1], data=0b01110101)
 
     def test_16n1(self):
         self.dut = AsyncSerialRX(divisor=7, data_bits=16, parity="none")
         self.rx_test([0, 1,0,1,0,1,1,1,0,1,1,1,1,0,0,0,0, 1],
-                     data=0b1010111011110000)
+                     data=0b0000111101110101)
 
     def test_8m1(self):
         self.dut = AsyncSerialRX(divisor=7, data_bits=8, parity="mark")
-        self.rx_test([0, 1,0,1,0,1,1,1,0, 1, 1], data=0b10101110)
-        self.rx_test([0, 1,0,1,0,1,1,0,0, 1, 1], data=0b10101100)
+        self.rx_test([0, 1,0,1,0,1,1,1,0, 1, 1], data=0b01110101)
+        self.rx_test([0, 1,0,1,0,1,1,0,0, 1, 1], data=0b00110101)
         self.rx_test([0, 1,0,1,0,1,1,1,0, 0, 1], errors={"parity"})
 
     def test_8s1(self):
         self.dut = AsyncSerialRX(divisor=7, data_bits=8, parity="space")
-        self.rx_test([0, 1,0,1,0,1,1,1,0, 0, 1], data=0b10101110)
-        self.rx_test([0, 1,0,1,0,1,1,0,0, 0, 1], data=0b10101100)
+        self.rx_test([0, 1,0,1,0,1,1,1,0, 0, 1], data=0b01110101)
+        self.rx_test([0, 1,0,1,0,1,1,0,0, 0, 1], data=0b00110101)
         self.rx_test([0, 1,0,1,0,1,1,1,0, 1, 1], errors={"parity"})
 
     def test_8e1(self):
         self.dut = AsyncSerialRX(divisor=7, data_bits=8, parity="even")
-        self.rx_test([0, 1,0,1,0,1,1,1,0, 1, 1], data=0b10101110)
-        self.rx_test([0, 1,0,1,0,1,1,0,0, 0, 1], data=0b10101100)
+        self.rx_test([0, 1,0,1,0,1,1,1,0, 1, 1], data=0b01110101)
+        self.rx_test([0, 1,0,1,0,1,1,0,0, 0, 1], data=0b00110101)
         self.rx_test([0, 1,0,1,0,1,1,1,0, 0, 1], errors={"parity"})
 
     def test_8o1(self):
         self.dut = AsyncSerialRX(divisor=7, data_bits=8, parity="odd")
-        self.rx_test([0, 1,0,1,0,1,1,1,0, 0, 1], data=0b10101110)
-        self.rx_test([0, 1,0,1,0,1,1,0,0, 1, 1], data=0b10101100)
+        self.rx_test([0, 1,0,1,0,1,1,1,0, 0, 1], data=0b01110101)
+        self.rx_test([0, 1,0,1,0,1,1,0,0, 1, 1], data=0b00110101)
         self.rx_test([0, 1,0,1,0,1,1,1,0, 1, 1], errors={"parity"})
 
     def test_err_frame(self):
@@ -84,15 +85,16 @@ class AsyncSerialRXTestCase(unittest.TestCase):
         self.dut = AsyncSerialRX(divisor=7)
 
         def process():
-            self.assertFalse((yield self.dut.rdy))
+            self.assertFalse((yield self.dut.r_rdy))
             yield from self.tx_bits([0, 0,0,0,0,0,0,0,0, 1])
             yield from self.tx_period()
-            self.assertFalse((yield self.dut.rdy))
+            self.assertFalse((yield self.dut.r_rdy))
             self.assertTrue((yield self.dut.err.overflow))
 
         simulation_test(self.dut, process)
 
 
+# TODO: Add test cases for continuous TX
 class AsyncSerialTXTestCase(unittest.TestCase):
     def tx_period(self):
         for _ in range((yield self.dut.divisor) + 1):

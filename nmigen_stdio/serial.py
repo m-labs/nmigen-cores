@@ -63,7 +63,7 @@ class AsyncSerialRX(Elaboratable):
 
         self.timer = Signal.like(self.divisor)
         self.shreg = Record(_wire_layout(len(self.data), self._parity))
-        self.bits_left = Signal(range(len(self.shreg) + 1))
+        self.bits_left = Signal(range(len(self.shreg)))
         self.done = Signal()
 
     def elaborate(self, platform):
@@ -81,7 +81,7 @@ class AsyncSerialRX(Elaboratable):
             with m.State("IDLE"):
                 with m.If(~self.i):
                     m.d.sync += [
-                        bits_left.eq(len(shreg)),
+                        bits_left.eq(len(shreg) - 1),
                         timer.eq(self.divisor >> 1)
                     ]
                     m.next = "BUSY"
@@ -89,18 +89,18 @@ class AsyncSerialRX(Elaboratable):
             with m.State("BUSY"):
                 with m.If(timer != 0):
                     m.d.sync += timer.eq(timer - 1)
-                with m.If(((timer == 0) & (bits_left != 1)) | ((timer == 1) & (bits_left == 1))):
+                with m.Else():
                     m.d.sync += [
                         shreg.eq(Cat(shreg[1:], self.i)),
-                        bits_left.eq(bits_left - 1)
+                        bits_left.eq(bits_left - 1),
+                        timer.eq(self.divisor)
                     ]
-                    with m.If(bits_left != 1):
-                        m.d.sync += timer.eq(self.divisor)
-                    with m.Else():
+                    with m.If(((self.divisor != 0) & (bits_left == 0)) |
+                              ((self.divisor == 0) & (bits_left == 1))):
                         m.next = "DONE"
 
             with m.State("DONE"):
-                with m.If(~done & (timer == 0)):
+                with m.If(timer == self.divisor):
                     with m.If(self.ack):
                         m.d.sync += [
                             self.data.eq(shreg.data),
@@ -109,34 +109,27 @@ class AsyncSerialRX(Elaboratable):
                                                  _compute_parity_bit(shreg.data, self._parity)))
                         ]
                     m.d.sync += [
-                        self.err.overflow.eq(~self.ack)
+                        self.err.overflow.eq(~self.ack),
+                        self.r_rdy.eq(1)
                     ]
-                    # At second clock edge for DONE,
-                    # timer is set as divisor
-                    m.d.sync += [
-                        timer.eq(self.divisor),
-                        done.eq(1)
-                    ]
-                # Continue the timer to receive one more bit
-                # Set back to IDLE if it is still stop bit
                 with m.If(timer != 0):
                     m.d.sync += timer.eq(timer - 1)
-                with m.Elif(done):
-                    m.d.sync += done.eq(0)
+                with m.Else():
+                    # Check if this next bit is start bit
+                    # (useful for divisor == 0)
                     with m.If(~self.i):
                         m.d.sync += [
                             shreg.eq(Cat(shreg[1:], self.i)),
-                            bits_left.eq(len(shreg)),
+                            bits_left.eq(len(shreg) - 2),
                             timer.eq(self.divisor)
                         ]
                         m.next = "BUSY"
                     with m.Else():
                         m.next = "IDLE"
 
-        m.d.comb += [
-            self.r_rdy.eq(fsm.ongoing("DONE") & done),
-            self.busy.eq(fsm.ongoing("BUSY"))
-        ]
+        m.d.comb += self.busy.eq(fsm.ongoing("BUSY"))
+        with m.If(self.r_rdy):
+            m.d.sync += self.r_rdy.eq(0)
 
         return m
 
