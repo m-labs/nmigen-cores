@@ -14,7 +14,7 @@ class _SPIFlashReaderBase:
     """
     CMD_WIDTH = 8
     CMD_DICT = {
-        "extended": None,
+        "standard": None,
         "dual"    : None,
         "quad"    : None
     }
@@ -27,7 +27,7 @@ class _SPIFlashReaderBase:
         the input cmd_value is extended/interleaved to full DQ width
         even if DQ1-DQ3 are "don't care" during the command phase:
 
-        eg:    1    1    1    0    1    0    1    1   (extended SPI mode)
+        eg:    1    1    1    0    1    0    1    1   (standard SPI mode)
               11   11   11   10   11   10   11   11   (dual I/O SPI mode)
             1111 1111 1111 1110 1111 1110 1111 1111   (quad I/O SPI mode)
         """
@@ -43,9 +43,9 @@ class _SPIFlashReaderBase:
 
     def __init__(self, *, protocol, data_width,
                  divisor=1, pins=None):
-        if protocol not in ["extended", "dual", "quad"]:
+        if protocol not in ["standard", "dual", "quad"]:
             raise ValueError("Invalid SPI protocol {!r}; must be one of "
-                             "\"extended\", \"dual\", or \"quad\""
+                             "\"standard\", \"dual\", or \"quad\""
                              .format(protocol))
         self._protocol = protocol
         self._data_width = data_width
@@ -58,7 +58,7 @@ class _SPIFlashReaderBase:
 
         self._pins = pins
 
-        if self._protocol == "extended":
+        if self._protocol == "standard":
             self.spi_width = 1
         elif self._protocol == "dual":
             self.spi_width = 2
@@ -68,7 +68,7 @@ class _SPIFlashReaderBase:
         self.cs = Signal(reset=0)       # Equivalent to ~CS_N
         self.clk = Signal()
 
-        if protocol == "extended":
+        if protocol == "standard":
             self.mosi = Signal()
             self.miso = Signal()
         elif protocol == "dual":
@@ -104,7 +104,7 @@ class _SPIFlashReaderBase:
             # (e.g. by instantiating a USRMCLK Instance) must NOT pass a CLK on the SPI flash
             if hasattr(self._pins, "clk"):
                 module.d.comb += self._pins.clk.o.eq(self.clk)
-            if self._protocol == "extended":
+            if self._protocol == "standard":
                 module.submodules += FFSynchronizer(self._pins.miso.i, self.miso)
                 module.d.comb += self._pins.mosi.o.eq(self.mosi)
             elif self._protocol in ["dual", "quad"]:
@@ -141,7 +141,7 @@ class _SPIFlashReaderBase:
         #     MISO starts latching bit/byte from slave
         with module.If((counter == self._divisor_val >> 1) & self.cs):
             module.d.sync += self.clk.eq(1)
-            if self._protocol == "extended":
+            if self._protocol == "standard":
                 module.d.sync += dq_i.eq(self.miso)
             elif self._protocol in ["dual", "quad"]:
                 module.d.sync += dq_i.eq(self.dq.i)
@@ -158,9 +158,9 @@ class _SPIFlashReaderBase:
         with module.Elif(self.cs):
             module.d.sync += counter.eq(counter - 1)
 
-        # MOSI logic for Extended SPI protocol:
+        # MOSI logic for Standard SPI protocol:
         # MOSI always output the leftmost bit of shreg
-        if self._protocol == "extended":
+        if self._protocol == "standard":
             module.d.comb += self.mosi.eq(shreg[-1])
         # MOSI logic for Dual and Quad SPI protocols:
         # Whenever DQ output should be enabled,
@@ -174,11 +174,11 @@ class _SPIFlashReaderBase:
 
 class SPIFlashSlowReader(_SPIFlashReaderBase, Elaboratable):
     """An SPI flash controller module for normal reading
-    (i.e. only available in Extended protocol and a lower frequency,
+    (i.e. only available in Standard protocol and a lower frequency,
     but no dummy cycles of waiting are required).
     """
     CMD_DICT = {
-        "extended": 0x03,
+        "standard": 0x03,
         "dual"    : None,
         "quad"    : None
     }
@@ -287,7 +287,7 @@ class SPIFlashFastReader(_SPIFlashReaderBase, Elaboratable):
     but dummy cycles of waiting are required)
     """
     CMD_DICT = {
-        "extended": 0x0b,
+        "standard": 0x0b,
         "dual"    : 0x3b,
         "quad"    : 0x6b
     }

@@ -101,8 +101,8 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
                     m.d.sync += self.dut.dq.i.eq(0)
             return m
 
-    def test_extended(self):
-        self.dut = SPIFlashFastReader(protocol="extended",
+    def test_standard(self):
+        self.dut = SPIFlashFastReader(protocol="standard",
                                       addr_width=24,
                                       data_width=32,
                                       divisor=49,
