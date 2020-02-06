@@ -41,8 +41,7 @@ class _SPIFlashReaderBase:
                 fcmd &= ~(1 << (bit*self.spi_width))
         return fcmd
 
-    def __init__(self, *, protocol, data_width,
-                 divisor=1, pins=None):
+    def __init__(self, *, protocol, data_width=32, divisor=1, divisor_bits=None, pins=None):
         if protocol not in ["standard", "dual", "quad"]:
             raise ValueError("Invalid SPI protocol {!r}; must be one of "
                              "\"standard\", \"dual\", or \"quad\""
@@ -53,8 +52,7 @@ class _SPIFlashReaderBase:
         if divisor < 1:
             raise ValueError("Invalid divisor value; must be at least 1"
                              .format(divisor))
-        self.divisor = Signal(bits_for(divisor), reset=divisor)
-        self._divisor_val = divisor + 1
+        self.divisor = Signal(divisor_bits or bits_for(divisor), reset=divisor)
 
         self._pins = pins
 
@@ -87,6 +85,8 @@ class _SPIFlashReaderBase:
         # (Note: DQ pins are both input/output only for Dual or Quad SPI protocols)
         self.shreg = Signal(max(self._fcmd_width, self._data_width))
         self.counter = Signal.like(self.divisor)
+        self.clk_posedge_next = Signal()
+        self.clk_negedge_next = Signal()
 
     def _add_spi_hardware_logic(self, platform, module):
         """Add the foundamental hardware logic for controlling all SPI pins to be used
@@ -108,12 +108,12 @@ class _SPIFlashReaderBase:
                 module.submodules += FFSynchronizer(self._pins.miso.i, self.miso)
                 module.d.comb += self._pins.mosi.o.eq(self.mosi)
             elif self._protocol in ["dual", "quad"]:
-                dq_oe = Signal()
+                self.dq_oe = Signal()
                 module.submodules.dq = platform.get_tristate(self.dq, self._pins.dq, None, False)
         # If the user doesn't give pins, create dq Pins for Dual & Quad
         else:
             if self._protocol in ["dual", "quad"]:
-                dq_oe = Signal()
+                self.dq_oe = Signal()
                 if self._protocol == "dual":
                     dq_pins = Record([
                         ("dq", Pin(width=2, dir="io", xdr=0).layout)
@@ -126,7 +126,7 @@ class _SPIFlashReaderBase:
                 tristate_submodule.submodules += Instance("$tribuf",
                     p_WIDTH=self.dq.width,
                     i_EN=self.dq.oe,
-                    i_A=Platformodule._invert_if(False, self.dq.o),
+                    i_A=self.dq.o,
                     o_Y=dq_pins
                 )
                 module.submodules.dq = tristate_submodule
@@ -139,8 +139,10 @@ class _SPIFlashReaderBase:
         dq_i = Signal(self.spi_width)
         # When countdown is half-way done, clock edge goes up (positive);
         #     MISO starts latching bit/byte from slave
-        with module.If((counter == self._divisor_val >> 1) & self.cs):
+        with module.If((counter == (self.divisor+1) >> 1) & self.cs):
             module.d.sync += self.clk.eq(1)
+            # Indicate imminent posedge
+            module.d.comb += self.clk_posedge_next.eq(1)
             if self._protocol == "standard":
                 module.d.sync += dq_i.eq(self.miso)
             elif self._protocol in ["dual", "quad"]:
@@ -152,6 +154,8 @@ class _SPIFlashReaderBase:
                 self.clk.eq(0),
                 counter.eq(self.divisor)
             ]
+            # Indicate imminent negedge
+            module.d.comb += self.clk_negedge_next.eq(1)
             # MOSI latches from shreg by "pushing" old data out from the left of shreg
             module.d.sync += shreg.eq(Cat(dq_i, shreg[:-self.spi_width]))
         # Normal countdown
@@ -168,7 +172,7 @@ class _SPIFlashReaderBase:
         elif self._protocol in ["dual", "quad"]:
             module.d.comb += [
                 self.dq.o.eq(shreg[-self.spi_width:]),
-                self.dq.oe.eq(dq_oe)
+                self.dq.oe.eq(self.dq_oe)
             ]
 
 
@@ -203,10 +207,10 @@ class SPIFlashSlowReader(_SPIFlashReaderBase, Elaboratable):
         # FSM
         with m.FSM() as fsm:
             state_durations = {
-                "SLOWREAD-CMD"    : self._divisor_val*(self.cmd_width//self.spi_width),
-                "SLOWREAD-ADDR"   : self._divisor_val*(self._addr_width//self.spi_width),
-                "SLOWREAD-READ"   : self._divisor_val*(self._data_width//self.spi_width),
-                "SLOWREAD-RDYWAIT": 1+self._divisor_val
+                "SLOWREAD-CMD"    : self.cmd_width//self.spi_width,
+                "SLOWREAD-ADDR"   : self._addr_width//self.spi_width,
+                "SLOWREAD-READ"   : self._data_width//self.spi_width,
+                "SLOWREAD-RDYWAIT": 1
             }
             max_duration = max([dur for state, dur in state_durations.items()])
             # A "count-up" counter for each state of the command
@@ -216,67 +220,65 @@ class SPIFlashSlowReader(_SPIFlashReaderBase, Elaboratable):
                 m.d.comb += self.rdy.eq(1)
                 with m.If(self.ack):
                     m.d.sync += [
-                        counter.eq(self._divisor_val),
+                        counter.eq(0),
                         self.clk.eq(0)
                     ]
                     m.next = "SLOWREAD-CS"
             # State: Chip select
             with m.State("SLOWREAD-CS"):
-                with m.If(counter == self._divisor_val >> 1):
+                m.d.sync += self.cs.eq(1)
+                with m.If(self.clk_negedge_next):
                     m.d.sync += [
                         state_counter.eq(0),
                         shreg[-self.cmd_width:].eq(fcmd)
                     ]
                     if self._protocol in ["dual", "quad"]:
-                        m.d.sync += dq_oe.eq(1)
+                        m.d.sync += self.dq_oe.eq(1)
                     m.next = "SLOWREAD-CMD"
             # State: Command, MOSI
             with m.State("SLOWREAD-CMD"):
-                with m.If(state_counter == state_durations["SLOWREAD-CMD"] - 1):
+                with m.If((state_counter == state_durations["SLOWREAD-CMD"] - 1) &
+                          self.clk_negedge_next):
                     m.d.sync += [
                         state_counter.eq(0),
                         shreg[-self._addr_width:].eq(byte_addr)
                     ]
                     m.next = "SLOWREAD-ADDR"
-                with m.Else():
+                with m.Elif(self.clk_negedge_next):
                     m.d.sync += state_counter.eq(state_counter + 1)
             # State: Address, MOSI
             with m.State("SLOWREAD-ADDR"):
-                with m.If(state_counter == state_durations["SLOWREAD-ADDR"] - 1):
+                with m.If((state_counter == state_durations["SLOWREAD-ADDR"] - 1) &
+                          self.clk_negedge_next):
                     m.d.sync += state_counter.eq(0)
                     if self._protocol in ["dual", "quad"]:
-                        m.d.sync += dq_oe.eq(0)
+                        m.d.sync += self.dq_oe.eq(0)
                     m.next = "SLOWREAD-READ"
-                with m.Else():
+                with m.Elif(self.clk_negedge_next):
                     m.d.sync += state_counter.eq(state_counter + 1)
             # State: Dummy cycles (waiting), and then Read (MISO)
             with m.State("SLOWREAD-READ"):
-                with m.If(state_counter == state_durations["SLOWREAD-READ"] - 1):
+                with m.If((state_counter == state_durations["SLOWREAD-READ"] - 1) &
+                          self.clk_negedge_next):
                     m.d.sync += [
                         state_counter.eq(0),
                         self.r_rdy.eq(1)
                     ]
                     if self._protocol in ["dual", "quad"]:
-                        m.d.sync += dq_oe.eq(0)
+                        m.d.sync += self.dq_oe.eq(0)
                     m.next = "SLOWREAD-RDYWAIT"
-                with m.Else():
+                with m.Elif(self.clk_negedge_next):
                     m.d.sync += state_counter.eq(state_counter + 1)
             # State: Send r_rdy (for 1 clock period), and then Wait
             with m.State("SLOWREAD-RDYWAIT"):
-                with m.If(state_counter == 0):
-                    m.d.sync += self.r_rdy.eq(0)
+                m.d.sync += self.r_rdy.eq(0)
                 # Early check to skip 1 clock period of doing nothing
-                with m.If(state_counter == state_durations["SLOWREAD-RDYWAIT"] - 2):
-                    m.d.sync += state_counter.eq(0)
+                with m.If((state_counter == state_durations["SLOWREAD-RDYWAIT"] - 1) &
+                          self.clk_posedge_next):
+                    m.d.sync += self.cs.eq(0)
                     m.next = "SLOWREAD-IDLE"
-                with m.Else():
+                with m.Elif(self.clk_negedge_next):
                     m.d.sync += state_counter.eq(state_counter + 1)
-        # Enable/Disable CS
-        with m.If(~fsm.ongoing("SLOWREAD-IDLE") &
-                  ~fsm.ongoing("SLOWREAD-RDYWAIT")):
-            m.d.comb += self.cs.eq(1)
-        with m.Else():
-            m.d.comb += self.cs.eq(0)
 
         return m
 
@@ -313,11 +315,10 @@ class SPIFlashFastReader(_SPIFlashReaderBase, Elaboratable):
         # FSM
         with m.FSM() as fsm:
             state_durations = {
-                "FASTREAD-CMD"     : self._divisor_val*(self.cmd_width//self.spi_width),
-                "FASTREAD-ADDR"    : self._divisor_val*(self._addr_width//self.spi_width),
-                "FASTREAD-WAITREAD": self._divisor_val*(self._dummy_cycles+
-                                                        self._data_width//self.spi_width),
-                "FASTREAD-RDYWAIT" : 1+self._divisor_val
+                "FASTREAD-CMD"     : self.cmd_width//self.spi_width,
+                "FASTREAD-ADDR"    : self._addr_width//self.spi_width,
+                "FASTREAD-WAITREAD": self._dummy_cycles+self._data_width//self.spi_width,
+                "FASTREAD-RDYWAIT" : 1
             }
             max_duration = max([dur for state, dur in state_durations.items()])
             # A "count-up" counter for each state of the command
@@ -327,66 +328,64 @@ class SPIFlashFastReader(_SPIFlashReaderBase, Elaboratable):
                 m.d.comb += self.rdy.eq(1)
                 with m.If(self.ack):
                     m.d.sync += [
-                        counter.eq(self._divisor_val),
+                        counter.eq(0),
                         self.clk.eq(0)
                     ]
                     m.next = "FASTREAD-CS"
             # State: Chip select
             with m.State("FASTREAD-CS"):
-                with m.If(counter == self._divisor_val >> 1):
+                m.d.sync += self.cs.eq(1)
+                with m.If(self.clk_negedge_next):
                     m.d.sync += [
                         state_counter.eq(0),
                         shreg[-self.cmd_width:].eq(fcmd)
                     ]
                     if self._protocol in ["dual", "quad"]:
-                        m.d.sync += dq_oe.eq(1)
+                        m.d.sync += self.dq_oe.eq(1)
                     m.next = "FASTREAD-CMD"
             # State: Command, MOSI
             with m.State("FASTREAD-CMD"):
-                with m.If(state_counter == state_durations["FASTREAD-CMD"] - 1):
+                with m.If((state_counter == state_durations["FASTREAD-CMD"] - 1) &
+                          self.clk_negedge_next):
                     m.d.sync += [
                         state_counter.eq(0),
                         shreg[-self._addr_width:].eq(byte_addr)
                     ]
                     m.next = "FASTREAD-ADDR"
-                with m.Else():
+                with m.Elif(self.clk_negedge_next):
                     m.d.sync += state_counter.eq(state_counter + 1)
             # State: Address, MOSI
             with m.State("FASTREAD-ADDR"):
-                with m.If(state_counter == state_durations["FASTREAD-ADDR"] - 1):
+                with m.If((state_counter == state_durations["FASTREAD-ADDR"] - 1) &
+                          self.clk_negedge_next):
                     m.d.sync += state_counter.eq(0)
                     if self._protocol in ["dual", "quad"]:
-                        m.d.sync += dq_oe.eq(0)
+                        m.d.sync += self.dq_oe.eq(0)
                     m.next = "FASTREAD-WAITREAD"
-                with m.Else():
+                with m.Elif(self.clk_negedge_next):
                     m.d.sync += state_counter.eq(state_counter + 1)
             # State: Dummy cycles (waiting), and then Read (MISO)
             with m.State("FASTREAD-WAITREAD"):
-                with m.If(state_counter == state_durations["FASTREAD-WAITREAD"] - 1):
+                with m.If((state_counter == state_durations["FASTREAD-WAITREAD"] - 1) &
+                          self.clk_negedge_next):
                     m.d.sync += [
                         state_counter.eq(0),
                         self.r_rdy.eq(1)
                     ]
                     if self._protocol in ["dual", "quad"]:
-                        m.d.sync += dq_oe.eq(0)
+                        m.d.sync += self.dq_oe.eq(0)
                     m.next = "FASTREAD-RDYWAIT"
-                with m.Else():
+                with m.Elif(self.clk_negedge_next):
                     m.d.sync += state_counter.eq(state_counter + 1)
             # State: Send r_rdy (for 1 clock period), and then Wait
             with m.State("FASTREAD-RDYWAIT"):
-                with m.If(state_counter == 0):
-                    m.d.sync += self.r_rdy.eq(0)
+                m.d.sync += self.r_rdy.eq(0)
                 # Early check to skip 1 clock period of doing nothing
-                with m.If(state_counter == state_durations["FASTREAD-RDYWAIT"] - 2):
-                    m.d.sync += state_counter.eq(0)
+                with m.If((state_counter == state_durations["FASTREAD-RDYWAIT"] - 1) &
+                          self.clk_posedge_next):
+                    m.d.sync += self.cs.eq(0)
                     m.next = "FASTREAD-IDLE"
-                with m.Else():
+                with m.Elif(self.clk_negedge_next):
                     m.d.sync += state_counter.eq(state_counter + 1)
-        # Enable/Disable CS
-        with m.If(~fsm.ongoing("FASTREAD-IDLE") &
-                  ~fsm.ongoing("FASTREAD-RDYWAIT")):
-            m.d.comb += self.cs.eq(1)
-        with m.Else():
-            m.d.comb += self.cs.eq(0)
 
         return m

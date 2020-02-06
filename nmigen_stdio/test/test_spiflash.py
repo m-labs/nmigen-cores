@@ -15,7 +15,7 @@ def simulation_test(dut, process):
 
 class SPIFlashFastReadTestCase(unittest.TestCase):
     def divisor_period(self):
-        for _ in range((yield self.dut.divisor) + 1):
+        for _ in range((yield self.divisor) + 1):
             yield
 
     class SuperNaiveFlash(Elaboratable):
@@ -47,7 +47,7 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
                 with m.State("INIT"):
                     m.d.sync += data_sig.eq(self.data)
                     with m.If(self.dut.cs):
-                        with m.If(self.dut.counter == self.dut._divisor_val >> 1):
+                        with m.If(self.dut.counter == self.dut.divisor >> 1):
                             m.d.comb += recv_data.w_en.eq(1)
                         with m.Else():
                             m.d.comb += recv_data.w_en.eq(0)
@@ -102,10 +102,11 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
             return m
 
     def test_standard(self):
+        self.divisor = 9
         self.dut = SPIFlashFastReader(protocol="standard",
                                       addr_width=24,
                                       data_width=32,
-                                      divisor=49,
+                                      divisor=self.divisor,
                                       dummy_cycles=15)
         self.flash = (SPIFlashFastReadTestCase.
                       SuperNaiveFlash(dut=self.dut,
@@ -115,10 +116,11 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
         self.simple_test()
 
     def test_dual(self):
+        self.divisor = 9
         self.dut = SPIFlashFastReader(protocol="dual",
                                       addr_width=24,
                                       data_width=32,
-                                      divisor=49,
+                                      divisor=self.divisor,
                                       dummy_cycles=15)
         self.flash = (SPIFlashFastReadTestCase.
                       SuperNaiveFlash(dut=self.dut,
@@ -128,10 +130,11 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
         self.simple_test()
 
     def test_quad(self):
+        self.divisor = 9
         self.dut = SPIFlashFastReader(protocol="quad",
                                       addr_width=24,
                                       data_width=32,
-                                      divisor=49,
+                                      divisor=self.divisor,
                                       dummy_cycles=15)
         self.flash = (SPIFlashFastReadTestCase.
                       SuperNaiveFlash(dut=self.dut,
@@ -154,8 +157,10 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
                 yield       # Wait until it enters RDYWAIT state
             self.assertEqual((yield self.dut.r_data), self.flash.data)
             # simulate continuous reading, informally
+            while not (yield self.dut.rdy):
+                yield
             yield self.dut.ack.eq(1)
-            for _ in range(10*self.dut._divisor_val):
+            for _ in range(10*self.divisor):
                 yield
 
         simulation_test(m, process)
