@@ -47,11 +47,11 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
                 with m.State("INIT"):
                     m.d.sync += data_sig.eq(self.data)
                     with m.If(self.dut.cs):
-                        with m.If(self.dut.counter == self.dut.divisor >> 1):
+                        with m.If(self.dut.clk_posedge_next):
                             m.d.comb += recv_data.w_en.eq(1)
                         with m.Else():
                             m.d.comb += recv_data.w_en.eq(0)
-                        with m.If(~recv_data.w_rdy & stored_data.w_rdy & (self.dut.counter == 0)):
+                        with m.If(~recv_data.w_rdy & stored_data.w_rdy & self.dut.clk_negedge_next):
                             m.next = "PUT-DATA"
                 with m.State("PUT-DATA"):
                     with m.If(stored_data_num_left != 0):
@@ -66,9 +66,9 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
                         ]
                     with m.Else():
                         m.d.comb += stored_data.w_en.eq(0)
-                    with m.If((dummy_counter != 0) & (self.dut.counter == 0)):
+                    with m.If((dummy_counter != 0) & self.dut.clk_negedge_next):
                         m.d.sync += dummy_counter.eq(dummy_counter - 1)
-                    with m.Elif((dummy_counter == 0) & (self.dut.counter == 0)):
+                    with m.Elif((dummy_counter == 0) & self.dut.clk_negedge_next):
                         m.d.comb += stored_data.r_en.eq(1)
                         m.next = "RETURN-DATA"
                 with m.State("RETURN-DATA"):
