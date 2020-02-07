@@ -41,13 +41,27 @@ class _SPIFlashReaderBase:
                 fcmd &= ~(1 << (bit*self.spi_width))
         return fcmd
 
-    def __init__(self, *, protocol, data_width=32, divisor=1, divisor_bits=None, pins=None):
+    def __init__(self, *, protocol, data_width=32, granularity=8,
+                 divisor=1, divisor_bits=None, pins=None):
         if protocol not in ["standard", "dual", "quad"]:
             raise ValueError("Invalid SPI protocol {!r}; must be one of "
                              "\"standard\", \"dual\", or \"quad\""
                              .format(protocol))
         self._protocol = protocol
+        if not isinstance(data_width, int) or data_width < 1:
+            raise ValueError("Data width must be a positive integer, not {}"
+                             .format(repr(data_width)))
+        if not isinstance(granularity, int) or granularity < 8 or (
+            granularity != 1 << (granularity.bit_length()-1)
+        ):
+            raise ValueError("Granularity must be a positive integer, "
+                             "at least 8 and a power of 2, not {}"
+                             .format(repr(granularity)))
+        if data_width < granularity or data_width % granularity:
+            raise ValueError("Data width must be divisible by granularity ({} % {} != 0)"
+                             .format(data_width, granularity))
         self._data_width = data_width
+        self._granularity = granularity
 
         if divisor < 1:
             raise ValueError("Invalid divisor value; must be at least 1"
@@ -83,7 +97,7 @@ class _SPIFlashReaderBase:
         self._fcmd_width = self.cmd_width * self.spi_width
         # A two-way register storing the current value on the DQ I/O pins
         # (Note: DQ pins are both input/output only for Dual or Quad SPI protocols)
-        self.shreg = Signal(max(self._fcmd_width, self._data_width))
+        self.shreg = None
         self.counter = Signal.like(self.divisor)
         self.clk_posedge_next = Signal()
         self.clk_negedge_next = Signal()
@@ -91,6 +105,8 @@ class _SPIFlashReaderBase:
     def _add_spi_hardware_logic(self, platform, module):
         """Add the foundamental hardware logic for controlling all SPI pins to be used
         """
+        if self.shreg is None:
+            raise NotImplementedError("Shift register shreg has not been defined!")
         shreg = self.shreg
         counter = self.counter
 
@@ -137,30 +153,33 @@ class _SPIFlashReaderBase:
         # Countdown logic for counter based on divisor
         # Also implements MISO logic
         dq_i = Signal(self.spi_width)
-        # When countdown is half-way done, clock edge goes up (positive);
-        #     MISO starts latching bit/byte from slave
-        with module.If((counter == (self.divisor+1) >> 1) & self.cs):
-            module.d.sync += self.clk.eq(1)
-            # Indicate imminent posedge
-            module.d.comb += self.clk_posedge_next.eq(1)
-            if self._protocol == "standard":
-                module.d.sync += dq_i.eq(self.miso)
-            elif self._protocol in ["dual", "quad"]:
-                module.d.sync += dq_i.eq(self.dq.i)
-        # When countdown reaches 0, clock edge goes down (negative)
-        #     shreg latches from MISO for r_data to read
-        with module.If((counter == 0) & self.cs):
-            module.d.sync += [
-                self.clk.eq(0),
-                counter.eq(self.divisor)
-            ]
-            # Indicate imminent negedge
-            module.d.comb += self.clk_negedge_next.eq(1)
-            # MOSI latches from shreg by "pushing" old data out from the left of shreg
-            module.d.sync += shreg.eq(Cat(dq_i, shreg[:-self.spi_width]))
-        # Normal countdown
-        with module.Elif(self.cs):
-            module.d.sync += counter.eq(counter - 1)
+        # Enable SCLK only when CS:
+        with module.If(self.cs):
+            # When countdown is half-way done, clock edge goes up (positive):
+            # - MISO latches bit/byte from slave
+            # - slave has been latching from MOSI mid-way (since previous negedge)
+            with module.If(counter == (self.divisor+1) >> 1):
+                module.d.sync += self.clk.eq(1)
+                # Indicate imminent posedge
+                module.d.comb += self.clk_posedge_next.eq(1)
+                if self._protocol == "standard":
+                    module.d.sync += dq_i.eq(self.miso)
+                elif self._protocol in ["dual", "quad"]:
+                    module.d.sync += dq_i.eq(self.dq.i)
+            # When countdown reaches 0, clock edge goes down (negative):
+            # - MOSI latches from shreg by "pushing" old data out from the left of shreg;
+            # - slave has been outputting MISO mid-way (since previous posedge)
+            with module.If(counter == 0):
+                module.d.sync += [
+                    self.clk.eq(0),
+                    counter.eq(self.divisor)
+                ]
+                # Indicate imminent negedge
+                module.d.comb += self.clk_negedge_next.eq(1)
+                module.d.sync += shreg.eq(Cat(dq_i, shreg[:-self.spi_width]))
+            # Normal countdown
+            with module.Else():
+                module.d.sync += counter.eq(counter - 1)
 
         # MOSI logic for Standard SPI protocol:
         # MOSI always output the leftmost bit of shreg
@@ -174,6 +193,10 @@ class _SPIFlashReaderBase:
                 self.dq.o.eq(shreg[-self.spi_width:]),
                 self.dq.oe.eq(self.dq_oe)
             ]
+
+        # r_rdy is asserted for only 1 clock cycle
+        with module.If(self.r_rdy):
+            module.d.sync += self.r_rdy.eq(0)
 
 
 class SPIFlashSlowReader(_SPIFlashReaderBase, Elaboratable):
@@ -203,7 +226,7 @@ class SPIFlashSlowReader(_SPIFlashReaderBase, Elaboratable):
         # fcmd: get formatted command based on cmd_dict
         fcmd = self._format_cmd()
         # addr: convert bus address to byte-sized address
-        byte_addr = Cat(Repl(0, log2_int(self._data_width//8)), self.addr)
+        byte_addr = Cat(Repl(0, log2_int(self._data_width // self._granularity)), self.addr)
         # FSM
         with m.FSM() as fsm:
             state_durations = {
@@ -249,35 +272,33 @@ class SPIFlashSlowReader(_SPIFlashReaderBase, Elaboratable):
             # State: Address, MOSI
             with m.State("SLOWREAD-ADDR"):
                 with m.If((state_counter == state_durations["SLOWREAD-ADDR"] - 1) &
-                          self.clk_negedge_next):
+                          self.clk_posedge_next):
                     m.d.sync += state_counter.eq(0)
                     if self._protocol in ["dual", "quad"]:
                         m.d.sync += self.dq_oe.eq(0)
                     m.next = "SLOWREAD-READ"
                 with m.Elif(self.clk_negedge_next):
                     m.d.sync += state_counter.eq(state_counter + 1)
-            # State: Dummy cycles (waiting), and then Read (MISO)
+            # State: Read, MISO
             with m.State("SLOWREAD-READ"):
                 with m.If((state_counter == state_durations["SLOWREAD-READ"] - 1) &
-                          self.clk_negedge_next):
-                    m.d.sync += [
-                        state_counter.eq(0),
-                        self.r_rdy.eq(1)
-                    ]
+                          self.clk_posedge_next):
+                    m.d.sync += state_counter.eq(0)
                     if self._protocol in ["dual", "quad"]:
                         m.d.sync += self.dq_oe.eq(0)
                     m.next = "SLOWREAD-RDYWAIT"
-                with m.Elif(self.clk_negedge_next):
+                with m.Elif(self.clk_posedge_next):
                     m.d.sync += state_counter.eq(state_counter + 1)
             # State: Send r_rdy (for 1 clock period), and then Wait
             with m.State("SLOWREAD-RDYWAIT"):
-                m.d.sync += self.r_rdy.eq(0)
+                with m.If((state_counter == 0) & self.clk_negedge_next):
+                    m.d.sync += self.r_rdy.eq(1)
                 # Early check to skip 1 clock period of doing nothing
                 with m.If((state_counter == state_durations["SLOWREAD-RDYWAIT"] - 1) &
                           self.clk_posedge_next):
                     m.d.sync += self.cs.eq(0)
                     m.next = "SLOWREAD-IDLE"
-                with m.Elif(self.clk_negedge_next):
+                with m.Elif(self.clk_posedge_next):
                     m.d.sync += state_counter.eq(state_counter + 1)
 
         return m
@@ -311,7 +332,7 @@ class SPIFlashFastReader(_SPIFlashReaderBase, Elaboratable):
         # fcmd: get formatted command based on cmd_dict
         fcmd = self._format_cmd()
         # addr: convert bus address to byte-sized address
-        byte_addr = Cat(Repl(0, log2_int(self._data_width//8)), self.addr)
+        byte_addr = Cat(Repl(0, log2_int(self._data_width // self._granularity)), self.addr)
         # FSM
         with m.FSM() as fsm:
             state_durations = {
@@ -357,7 +378,7 @@ class SPIFlashFastReader(_SPIFlashReaderBase, Elaboratable):
             # State: Address, MOSI
             with m.State("FASTREAD-ADDR"):
                 with m.If((state_counter == state_durations["FASTREAD-ADDR"] - 1) &
-                          self.clk_negedge_next):
+                          self.clk_posedge_next):
                     m.d.sync += state_counter.eq(0)
                     if self._protocol in ["dual", "quad"]:
                         m.d.sync += self.dq_oe.eq(0)
@@ -367,25 +388,23 @@ class SPIFlashFastReader(_SPIFlashReaderBase, Elaboratable):
             # State: Dummy cycles (waiting), and then Read (MISO)
             with m.State("FASTREAD-WAITREAD"):
                 with m.If((state_counter == state_durations["FASTREAD-WAITREAD"] - 1) &
-                          self.clk_negedge_next):
-                    m.d.sync += [
-                        state_counter.eq(0),
-                        self.r_rdy.eq(1)
-                    ]
+                          self.clk_posedge_next):
+                    m.d.sync += state_counter.eq(0)
                     if self._protocol in ["dual", "quad"]:
                         m.d.sync += self.dq_oe.eq(0)
                     m.next = "FASTREAD-RDYWAIT"
-                with m.Elif(self.clk_negedge_next):
+                with m.Elif(self.clk_posedge_next):
                     m.d.sync += state_counter.eq(state_counter + 1)
             # State: Send r_rdy (for 1 clock period), and then Wait
             with m.State("FASTREAD-RDYWAIT"):
-                m.d.sync += self.r_rdy.eq(0)
+                with m.If((state_counter == 0) & self.clk_negedge_next):
+                    m.d.sync += self.r_rdy.eq(1)
                 # Early check to skip 1 clock period of doing nothing
                 with m.If((state_counter == state_durations["FASTREAD-RDYWAIT"] - 1) &
                           self.clk_posedge_next):
                     m.d.sync += self.cs.eq(0)
                     m.next = "FASTREAD-IDLE"
-                with m.Elif(self.clk_negedge_next):
+                with m.Elif(self.clk_posedge_next):
                     m.d.sync += state_counter.eq(state_counter + 1)
 
         return m
