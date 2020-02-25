@@ -113,11 +113,11 @@ class _SPIFlashReaderBase:
         counter_en = self.counter_en
 
         if self._pins is not None:
-            module.d.comb += [
-                self._pins.cs.o.eq(self.cs),
-                self._pins.wp.eq(0),
-                self._pins.hold.eq(0)
-            ]
+            module.d.comb += self._pins.cs.o.eq(self.cs)
+            if hasattr(self._pins, "wp"):
+                module.d.comb += self._pins.wp.eq(0)
+            if hasattr(self._pins, "hold"):
+                module.d.comb += self._pins.hold.eq(0)
             # Platforms that require declaration of a user SPI clock signal
             # (e.g. by instantiating a USRMCLK Instance) must NOT pass a CLK on the SPI flash
             if hasattr(self._pins, "clk"):
