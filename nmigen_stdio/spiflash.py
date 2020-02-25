@@ -127,7 +127,7 @@ class _SPIFlashReaderBase:
                 module.d.comb += self._pins.mosi.o.eq(self.mosi)
             elif self._protocol in ["dual", "quad"]:
                 self.dq_oe = Signal()
-                module.submodules.dq = platform.get_tristate(self.dq, self._pins.dq, None, False)
+                self.dq = self._pins.dq
         # If the user doesn't give pins, create dq Pins for Dual & Quad
         else:
             if self._protocol in ["dual", "quad"]:
