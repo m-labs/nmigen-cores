@@ -54,18 +54,6 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
                         with m.If(~recv_data.w_rdy & stored_data.w_rdy & self.dut.clk_negedge_next):
                             m.next = "PUT-DATA"
                 with m.State("PUT-DATA"):
-                    with m.If(stored_data_num_left != 0):
-                        m.d.comb += [
-                            stored_data.w_en.eq(1),
-                            stored_data.w_data.eq(data_sig[-self.dut.spi_width:])
-                        ]
-                        m.d.sync += [
-                            stored_data_num_left.eq(stored_data_num_left-1),
-                            data_sig.eq(Cat(Repl(0, self.dut.spi_width),
-                                            data_sig[:-self.dut.spi_width]))
-                        ]
-                    with m.Else():
-                        m.d.comb += stored_data.w_en.eq(0)
                     with m.If((dummy_counter != 0) & self.dut.clk_negedge_next):
                         m.d.sync += dummy_counter.eq(dummy_counter - 1)
                     with m.Elif((dummy_counter == 0) & self.dut.clk_negedge_next):
@@ -89,6 +77,16 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
                         ]
                     with m.Else():
                         m.d.comb += stored_data.w_en.eq(0)
+            with m.If((stored_data_num_left != 0) & ~fsm.ongoing("INIT")):
+                m.d.comb += [
+                    stored_data.w_en.eq(1),
+                    stored_data.w_data.eq(data_sig[-self.dut.spi_width:])
+                ]
+                m.d.sync += [
+                    stored_data_num_left.eq(stored_data_num_left-1),
+                    data_sig.eq(Cat(Repl(0, self.dut.spi_width),
+                                    data_sig[:-self.dut.spi_width]))
+                ]
             with m.If(stored_data.r_rdy & stored_data.r_en):
                 if self.dut.spi_width == 1:
                     m.d.sync += self.dut.miso.eq(stored_data.r_data)
@@ -164,7 +162,7 @@ class SPIFlashFastReadTestCase(unittest.TestCase):
             while not (yield self.dut.rdy):
                 yield
             yield self.dut.ack.eq(1)
-            for _ in range(10*self.divisor):
-                yield
+            while not (yield self.dut.cs):
+                yield       # Test fails if simulation got stuck here
 
         simulation_test(m, process)
