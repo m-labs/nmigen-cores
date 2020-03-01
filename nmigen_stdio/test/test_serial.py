@@ -44,9 +44,56 @@ class AsyncSerialRXTestCase(unittest.TestCase):
                     self.assertTrue((yield getattr(self.dut.err, error)))
         simulation_test(self.dut, process)
 
+    def rx_test_multiple(self, bits, *, data_bits, parity, dataset=None, errorset=None, continuous=False):
+        def process():
+            tx_bitlen = (data_bits+(2 if parity=="none" else 3))
+            if len(bits) % tx_bitlen != 0:
+                raise ValueError("Total number of bits {} is not a multiple of number of bits per transmission {}"
+                                 .format(bits, tx_bitlen))
+            self.assertFalse((yield self.dut.r_rdy))
+            rx_count = 0
+            for bit in bits:
+                yield self.dut.ack.eq(1)
+                for _ in range((yield self.dut.divisor) + 1):
+                    if (yield self.dut.r_rdy):
+                        if dataset is not None:
+                            data = dataset[rx_count]
+                            self.assertFalse((yield self.dut.err))
+                            self.assertEqual((yield self.dut.data), data)
+                        if errorset is not None:
+                            errors = errorset[rx_count]
+                            self.assertTrue((yield self.dut.err))
+                            for error in errors:
+                                self.assertTrue((yield getattr(self.dut.err, error)))
+                        rx_count += 1
+                        if not continuous:
+                            for __ in range((yield self.dut.divisor) + 1):
+                                yield
+                    yield
+                yield self.dut.i.eq(bit)
+        simulation_test(self.dut, process)
+
     def test_8n1(self):
         self.dut = AsyncSerialRX(divisor=7, data_bits=8, parity="none")
         self.rx_test([0, 1,0,1,0,1,1,1,0, 1], data=0b01110101)
+
+    def test_8n1_multiple_continuous(self):
+        self.dut = AsyncSerialRX(divisor=7, data_bits=8, parity="none")
+        self.rx_test_multiple(
+            [0, 0,1,0,1,0,1,0,1, 1,
+             0, 1,0,1,0,1,0,1,0, 1], data_bits=8, parity="none",
+            dataset=[0b10101010, 0b01010101],
+            continuous=True
+        )
+
+    def test_8n1_multiple_notcontinuous(self):
+        self.dut = AsyncSerialRX(divisor=7, data_bits=8, parity="none")
+        self.rx_test_multiple(
+            [0, 0,1,0,1,0,1,0,1, 1,
+             0, 1,0,1,0,1,0,1,0, 1], data_bits=8, parity="none",
+            dataset=[0b10101010, 0b01010101],
+            continuous=False
+        )
 
     def test_16n1(self):
         self.dut = AsyncSerialRX(divisor=7, data_bits=16, parity="none")
@@ -111,34 +158,56 @@ class AsyncSerialTXTestCase(unittest.TestCase):
             yield from self.tx_period()     # Check 1 more period
         simulation_test(self.dut, process)
 
+    def tx_test_multiple(self, *, dataset, continuous=False):
+        def process():
+            if continuous:
+                yield self.dut.continuous.eq(1)
+            yield self.dut.ack.eq(1)
+            yield self.dut.data.eq(dataset[0])
+            yield
+            for _ in range(10):
+                yield from self.tx_period()
+            for data in dataset[1:]:
+                if not continuous:
+                    yield
+                yield self.dut.data.eq(data)
+                yield
+                for _ in range(10):
+                    yield from self.tx_period()
+            yield from self.tx_period()     # Check 1 more period
+        simulation_test(self.dut, process)
+
     def test_8n1(self):
         self.dut = AsyncSerialTX(divisor=7, data_bits=8, parity="none")
-        self.tx_test(data=0x10101010)
+        self.tx_test(data=0b10101010)
 
-    def test_8n1_100e6_112500(self):
-        div = round(100e6/112500)-1
-        self.dut = AsyncSerialTX(divisor=div, data_bits=8, parity="none")
-        self.tx_test(data=32)
+    def test_8n1_multiple_continuous(self):
+        self.dut = AsyncSerialTX(divisor=7, data_bits=8, parity="none")
+        self.tx_test_multiple(dataset=[0b10101010, 0b01010101], continuous=True)
+
+    def test_8n1_multiple_notcontinuous(self):
+        self.dut = AsyncSerialTX(divisor=7, data_bits=8, parity="none")
+        self.tx_test_multiple(dataset=[0b10101010, 0b01010101], continuous=False)
 
     def test_16n1(self):
         self.dut = AsyncSerialTX(divisor=7, data_bits=16, parity="none")
-        self.tx_test(data=0x0101011011110100)
+        self.tx_test(data=0b0101011011110100)
 
     def test_8m1(self):
         self.dut = AsyncSerialTX(divisor=7, data_bits=8, parity="mark")
-        self.tx_test(data=0x00111100)
+        self.tx_test(data=0b00111100)
 
     def test_8s1(self):
         self.dut = AsyncSerialTX(divisor=7, data_bits=8, parity="space")
-        self.tx_test(data=0x11011010)
+        self.tx_test(data=0b11011010)
 
     def test_8e1(self):
         self.dut = AsyncSerialTX(divisor=7, data_bits=8, parity="even")
-        self.tx_test(data=0x00101110)
+        self.tx_test(data=0b00101110)
 
     def test_8o1(self):
         self.dut = AsyncSerialTX(divisor=7, data_bits=8, parity="odd")
-        self.tx_test(data=0x01110011)
+        self.tx_test(data=0b01110011)
 
     def tx_bits(self, data_bits):
         for _ in range(data_bits):
@@ -461,7 +530,7 @@ class AsyncSerialBitstreamSpec(Elaboratable):
 
 class AsyncSerialBitstreamTestCase(FHDLTestCase):
     def check_formal(self, *, divisor, data_bits, parity):
-        depth = (divisor+1) * (data_bits+(3 if parity!="none" else 2) + 2)
+        depth = (divisor+1) * (data_bits+(3 if parity!="none" else 2) + 2) + 6
         self.assertFormal(AsyncSerialBitstreamSpec(divisor=divisor,
                                                    data_bits=data_bits,
                                                    parity=parity),
