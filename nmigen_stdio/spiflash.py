@@ -41,7 +41,7 @@ class _SPIFlashReaderBase:
                 fcmd &= ~(1 << (bit*self.spi_width))
         return fcmd
 
-    def __init__(self, *, protocol, data_width=32, granularity=8,
+    def __init__(self, *, protocol, data_width=32,
                  divisor=1, divisor_bits=None, pins=None):
         if protocol not in ["standard", "dual", "quad"]:
             raise ValueError("Invalid SPI protocol {!r}; must be one of "
@@ -49,19 +49,12 @@ class _SPIFlashReaderBase:
                              .format(protocol))
         self._protocol = protocol
         if not isinstance(data_width, int) or data_width < 1:
-            raise ValueError("Data width must be a positive integer, not {}"
+            raise ValueError("Bus data width must be a positive integer, not {}"
                              .format(repr(data_width)))
-        if not isinstance(granularity, int) or granularity < 8 or (
-            granularity != 1 << (granularity.bit_length()-1)
-        ):
-            raise ValueError("Granularity must be a positive integer, "
-                             "at least 8 and a power of 2, not {}"
-                             .format(repr(granularity)))
-        if data_width < granularity or data_width % granularity:
-            raise ValueError("Data width must be divisible by granularity ({} % {} != 0)"
-                             .format(data_width, granularity))
+        if data_width < 8 or data_width % 8:
+            raise ValueError("Data width must be divisible by 8 ({} % 8 != 0)"
+                             .format(data_width))
         self._data_width = data_width
-        self._granularity = granularity
 
         if divisor < 1:
             raise ValueError("Invalid divisor value; must be at least 1"
@@ -234,7 +227,7 @@ class SPIFlashSlowReader(_SPIFlashReaderBase, Elaboratable):
         # fcmd: get formatted command based on cmd_dict
         fcmd = self._format_cmd()
         # addr: convert bus address to byte-sized address
-        byte_addr = Cat(Repl(0, log2_int(self._data_width // self._granularity)), self.addr)
+        byte_addr = Cat(Repl(0, log2_int(self._data_width // 8)), self.addr)
         # FSM
         with m.FSM() as fsm:
             state_durations = {
@@ -340,7 +333,7 @@ class SPIFlashFastReader(_SPIFlashReaderBase, Elaboratable):
         # fcmd: get formatted command based on cmd_dict
         fcmd = self._format_cmd()
         # addr: convert bus address to byte-sized address
-        byte_addr = Cat(Repl(0, log2_int(self._data_width // self._granularity)), self.addr)
+        byte_addr = Cat(Repl(0, log2_int(self._data_width // 8)), self.addr)
         # FSM
         with m.FSM() as fsm:
             state_durations = {
