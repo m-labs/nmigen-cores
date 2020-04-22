@@ -97,7 +97,7 @@ class _SPIFlashReaderBase:
         self.clk_negedge_next = Signal()
 
     def _add_spi_hardware_logic(self, platform, module):
-        """Add the foundamental hardware logic for controlling all SPI pins to be used
+        """Add the fundamental hardware logic for controlling all SPI pins to be used
         """
         if self.shreg is None:
             raise NotImplementedError("Shift register shreg has not been defined!")
