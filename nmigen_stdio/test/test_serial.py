@@ -17,7 +17,6 @@ def simulation_test(dut, process):
         sim.run()
 
 
-# TODO: Add test cases for continuous RX
 class AsyncSerialRXTestCase(unittest.TestCase):
     def tx_period(self):
         for _ in range((yield self.dut.divisor) + 1):
@@ -141,7 +140,6 @@ class AsyncSerialRXTestCase(unittest.TestCase):
         simulation_test(self.dut, process)
 
 
-# TODO: Add test cases for continuous TX
 class AsyncSerialTXTestCase(unittest.TestCase):
     def tx_period(self):
         for _ in range((yield self.dut.divisor) + 1):
@@ -216,6 +214,16 @@ class AsyncSerialTXTestCase(unittest.TestCase):
 
 
 class AsyncSerialLoopbackSpec(Elaboratable):
+    """This FV model is to verify the behaviours of the transmitter and receiver with data of 
+    variable width. The test case contains the following independent variables:
+
+    * Data width: the number of bits to transmit per unit of transmission
+    * Divisor: the value of the divisor register
+    * Parity: the parity mode
+
+    Only when different arguments are passed to the unit test function will these independent 
+    variables change. 
+    """
     def __init__(self, *, divisor, data_bits, parity):
         self.rx = AsyncSerialRX(divisor=divisor, data_bits=data_bits, parity=parity)
         self.tx = AsyncSerialTX(divisor=divisor, data_bits=data_bits, parity=parity)
@@ -227,17 +235,19 @@ class AsyncSerialLoopbackSpec(Elaboratable):
         m.submodules.rx = rx = self.rx
         m.submodules.tx = tx = self.tx
 
+        # RX FIFO: stores data received by RX
         m.submodules.rx_fifo = rx_fifo = SyncFIFO(width=self.data_bits, depth=1)
+        # TX FIFO: stores data to be sent by TX
         m.submodules.tx_fifo = tx_fifo = SyncFIFO(width=self.data_bits, depth=1)
 
         m.d.comb += [
-            #
+            # Connect TX to the TX FIFO
             tx.ack.eq(tx_fifo.r_rdy),
             tx_fifo.r_en.eq(~tx.busy),
             tx.data.eq(tx_fifo.r_data),
-            #
+            # Connect TX output to RX input
             rx.i.eq(tx.o),
-            #
+            # Connect RX to the RX FIFO
             rx.ack.eq(rx_fifo.w_rdy),
             rx_fifo.w_en.eq(rx.r_rdy),
             rx_fifo.w_data.eq(rx.data)
@@ -331,6 +341,16 @@ class AsyncSerialLoopbackTestCase(FHDLTestCase):
 
 
 class AsyncSerialBitstreamSpec(Elaboratable):
+    """This FV model is to verify the continuous behaviour of the receiver with data of 
+    variable width. The test case contains the following independent variables:
+
+    * Data width: the number of bits to transmit per unit of transmission
+    * Divisor: the value of the divisor register
+    * Parity: the parity mode
+
+    Only when different arguments are passed to the unit test function will these independent 
+    variables change.
+    """
     def __init__(self, *, divisor, data_bits, parity):
         self.rx = AsyncSerialRX(divisor=divisor, data_bits=data_bits, parity=parity)
         self.divisor = divisor
@@ -342,16 +362,26 @@ class AsyncSerialBitstreamSpec(Elaboratable):
         m.submodules.rx = rx = self.rx
 
         len_bitstream = self.data_bits+(3 if self.parity!="none" else 2)
+        # RX FIFO: stores data (the first sequence) received by RX
         m.submodules.rx_fifo = rx_fifo = SyncFIFO(width=self.data_bits, depth=1)
+        # TX bit FIFO: stores the bit sequence generated and sends it to RX bit by bit
         m.submodules.txbit_fifo = txbit_fifo = SyncFIFO(width=1, depth=len_bitstream+2)
-
+        # A const flag to determine if an extra bit of 0 or 1 should be sent
+        fv_tx_extra_bit = AnyConst(1)
+        # A flag to indicate if an extra bit is being sent
+        fv_tx_extra_send = Signal()
+        # A flag to indicate if the TX FIFO has started to be read
         fv_txfifo_start = Signal()
+        # A flag to indicate if the Tx FIFO has ended
+        fv_txfifo_end = Signal()
         with m.If(fv_txfifo_start):
-            m.d.sync += rx.i.eq(txbit_fifo.r_data)
+            m.d.sync += rx.i.eq(
+                Mux(fv_tx_extra_send, fv_tx_extra_bit, txbit_fifo.r_data)
+            )
         with m.Else():
             m.d.sync += rx.i.eq(1)
         m.d.comb += [
-            #
+            # Connect RX to the RX FIFO
             rx.ack.eq(rx_fifo.w_rdy),
             rx_fifo.w_en.eq(rx.r_rdy),
             rx_fifo.w_data.eq(rx.data)
@@ -370,26 +400,32 @@ class AsyncSerialBitstreamSpec(Elaboratable):
         fv_tx_bitstream_val = AnyConst(len_bitstream)
         # Assume the bitstream doesn't have 1-bit delay
         m.d.comb += Assume(fv_tx_bitstream_val[0] != 1)
-        fv_tx_bitstream = Signal(len_bitstream+1)
-        fv_tx_extra_bit = AnyConst(1)       # A const bit representing
-                                            #     the extra bit after the bitstream
-        fv_tx_overflow = AnyConst(1)        # A const flag to determine if
-                                            #     the rx_fifo is always full
-        fv_tx_bitno = Signal(range(len(fv_tx_bitstream)+1))
+        fv_tx_bitstream = Signal(len_bitstream)
+        # Delay for issuing an extra bit after the bitstream
+        fv_tx_end_delay = Signal(range(self.divisor + 2))
+        m.d.comb += [
+            Assume(Stable(fv_tx_end_delay)),
+            Assume((fv_tx_end_delay >= 0) & (fv_tx_end_delay <= rx.divisor + 1))
+        ]
+        # A const flag to determine if the rx_fifo is always full
+        fv_tx_overflow = AnyConst(1)
+        fv_tx_bitno = Signal(range(len_bitstream+1))
         fv_tx_timer = Signal.like(rx.divisor)
         fv_rx_data = Signal(self.data_bits)
-        #
-        fv_txfifo_num_bits = Signal(range(len(fv_tx_bitstream)+2))
+        # A flag to indicate if the extra bit (0) has been issued
+        fv_tx_extra_done = Signal()
+        # FSM for storing the bit sequence generated
+        fv_txfifo_num_bits = Signal(range(len_bitstream+2))
         with m.FSM(domain="txclk") as txfifo_fsm:
             with m.State("WRITE-PREP"):
                 m.d.txclk += [
-                    fv_tx_bitstream.eq(Cat(fv_tx_bitstream_val, fv_tx_extra_bit)),
+                    fv_tx_bitstream.eq(Cat(fv_tx_bitstream_val)),
                     fv_txfifo_num_bits.eq(0),
                     txbit_fifo.w_en.eq(1)
                 ]
                 m.next = "WRITE-BITSTREAM"
             with m.State("WRITE-BITSTREAM"):
-                with m.If(fv_txfifo_num_bits != len(fv_tx_bitstream)+1):
+                with m.If(fv_txfifo_num_bits != len_bitstream+1):
                     m.d.txclk += [
                         txbit_fifo.w_data.eq(fv_tx_bitstream[0]),
                         fv_tx_bitstream.eq(Cat(fv_tx_bitstream[1:], 0)),
@@ -399,14 +435,13 @@ class AsyncSerialBitstreamSpec(Elaboratable):
                     m.d.txclk += txbit_fifo.w_en.eq(0)
                     m.next = "DONE"
         txfifo_fsm.state.name = "fv_txfifo_fsm_state"
-        #
-        fv_tx_extra_done = Signal()
+        # FSM for sending the bit sequence bit by bit
         with m.FSM(domain="txclk") as tx_fsm:
             with m.State("TX-PREP"):
                 m.d.txclk += txbit_fifo.r_en.eq(0)
                 with m.If(txbit_fifo.r_rdy):
                     m.d.txclk += [
-                        fv_tx_bitno.eq(len(fv_tx_bitstream)),
+                        fv_tx_bitno.eq(len_bitstream),
                         fv_tx_timer.eq(1)
                     ]
                     m.next = "TX-SENDBIT"
@@ -416,7 +451,7 @@ class AsyncSerialBitstreamSpec(Elaboratable):
                     m.d.txclk += fv_tx_timer.eq(fv_tx_timer - 1)
                     with m.If((fv_tx_timer == 1) & (fv_tx_bitno != 0)):
                         m.d.txclk += txbit_fifo.r_en.eq(1)
-                        with m.If(fv_tx_bitno == len(fv_tx_bitstream)):
+                        with m.If(fv_tx_bitno == len_bitstream):
                             m.d.txclk += fv_txfifo_start.eq(1)
                 with m.Else():
                     m.d.txclk += [
@@ -424,13 +459,36 @@ class AsyncSerialBitstreamSpec(Elaboratable):
                         fv_tx_timer.eq(self.divisor),
                     ]
                     with m.If(fv_tx_bitno == 0):
-                        m.d.txclk += fv_tx_extra_done.eq(1)
-                        m.next = "DONE"
+                        m.d.txclk += fv_txfifo_end.eq(1)
+                        with m.If(fv_tx_end_delay == 0):
+                            m.d.txclk += [
+                                fv_tx_timer.eq(self.divisor),
+                                fv_tx_extra_send.eq(1)
+                            ]
+                            m.next = "TX-SENDEXTRA"
+                        with m.Else():
+                            m.d.txclk += fv_tx_timer.eq(fv_tx_end_delay)
+                            m.next = "TX-ENDDELAY"
+            with m.State("TX-ENDDELAY"):
+                with m.If(fv_tx_timer != 0):
+                    m.d.txclk += fv_tx_timer.eq(fv_tx_timer - 1)
+                with m.Else():
+                    m.d.txclk += [
+                        fv_tx_timer.eq(self.divisor),
+                        fv_tx_extra_send.eq(1)
+                    ]
+                    m.next = "TX-SENDEXTRA"
+            with m.State("TX-SENDEXTRA"):
+                with m.If(fv_tx_timer != 0):
+                    m.d.txclk += fv_tx_timer.eq(fv_tx_timer - 1)
+                with m.Else():
+                    m.d.txclk += fv_tx_extra_done.eq(1)
+                    m.next = "DONE"
         tx_fsm.state.name = "fv_tx_fsm_state"
 
         # Assumptions for RX
         m.d.comb += Assume(Stable(rx.divisor))
-        #
+        # Connect RX to the RX FIFO
         with m.If(fv_tx_overflow):
             m.d.comb += Assume(rx_fifo.w_rdy == 0)
         with m.Else():
@@ -438,7 +496,7 @@ class AsyncSerialBitstreamSpec(Elaboratable):
                 rx_fifo.w_en.eq(rx.r_rdy),
                 rx_fifo.w_data.eq(rx.data)
             ]
-        #
+        # FSM for storing the received data
         with m.FSM() as rx_fsm:
             with m.State("RX-1"):
                 with m.If(~rx_fifo.w_rdy):
@@ -514,15 +572,10 @@ class AsyncSerialBitstreamSpec(Elaboratable):
             with m.If(rx.err.overflow):
                 m.d.comb += Assert(fv_tx_overflow)
 
-        with m.If(~fv_tx_extra_bit & fv_tx_extra_done):
+        with m.If(fv_tx_extra_done):
             m.d.comb += [
-                Assert(rx.i == 0),
-                Assert(rx.busy == 1)    # BUSY to read the next sequence
-            ]
-        with m.Elif(fv_tx_extra_bit & fv_tx_extra_done):
-            m.d.comb += [
-                Assert(rx.i == 1),
-                Assert(rx.busy == 0)
+                Assert(rx.i == fv_tx_extra_bit),
+                Assert(rx.busy == ~fv_tx_extra_bit)
             ]
 
         return m
