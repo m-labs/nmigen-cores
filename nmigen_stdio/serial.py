@@ -37,7 +37,43 @@ def _wire_layout(data_bits, parity="none"):
 
 
 class AsyncSerialRX(Elaboratable):
-    """An UART receiver module. Receives the LSB first and MSB last.
+    """A UART receiver module. Receives the LSB first and MSB last.
+
+    Parameters
+    ----------
+    divisor : int
+        Reset value of the divisor register, whose value is used as the number of clock cycles 
+        needed per bit.
+    divisor_bits : int
+        Number of bits used to form the divisor value. 
+        If not None, the reset value of the divisor is 2**divisor_bits.
+    data_bits : int
+        Number of data bits per transfer.
+    parity : str
+        Parity mode. Must be either "none", "mark", "space", "even" or "odd"
+    pins : Record
+        Corresponding serial communication pins on board.
+
+    Attributes
+    ----------
+    divisor : Signal
+        Divisor register.
+    i : Signal()
+        Input pin.
+    data : Signal(data_bits)
+        Returns the data received when `r_rdy` is asserted.
+    err.overflow : Signal()
+        Internally driven, to indicate if the transfer has overflown.
+    err.frame : Signal()
+        Internally driven, to indicate if the transfer has framing error.
+    err.parity : Signal()
+        Internally driven, to indicate if the transfer has parity error.
+    ack : Signal()
+        Externally driven, to indicate if transfer of received data is enabled.
+    busy : Signal()
+        Internally driven, to indicate if there is an ongoing data transfer.
+    r_rdy : Signal()
+        Internally driven, to indicate if received data is ready to be read.
     """
     def __init__(self, *, divisor, divisor_bits=None, data_bits=8, parity="none", pins=None):
         _check_parity(parity)
@@ -51,11 +87,8 @@ class AsyncSerialRX(Elaboratable):
             ("frame",    1),
             ("parity",   1),
         ])
-        # rx.ack: Externally driven, to indicate if transfer of received data is enabled
         self.ack  = Signal()
-        # rx.busy: Internally driven, to indicate if there is an ongoing data transfer
         self.busy = Signal()
-        # rx.r_rdy: Internally driven, to indicate if received data is ready to be read
         self.r_rdy  = Signal()
 
         self.i    = Signal(reset=1)
@@ -64,7 +97,6 @@ class AsyncSerialRX(Elaboratable):
         self.timer = Signal.like(self.divisor)
         self.shreg = Record(_wire_layout(len(self.data), self._parity))
         self.bits_left = Signal(range(len(self.shreg)))
-        self.done = Signal()
 
     def elaborate(self, platform):
         m = Module()
@@ -72,7 +104,6 @@ class AsyncSerialRX(Elaboratable):
         timer = self.timer
         shreg = self.shreg
         bits_left = self.bits_left
-        done = self.done
 
         if self._pins is not None:
             m.submodules += FFSynchronizer(self._pins.rx.i, self.i, reset=1)
@@ -135,23 +166,52 @@ class AsyncSerialRX(Elaboratable):
 
 
 class AsyncSerialTX(Elaboratable):
-    """An UART transmitter module. Transmits the LSB first and MSB last.
+    """A UART transmitter module. Transmits the LSB first and MSB last.
+
+    Parameters
+    ----------
+    divisor : int
+        Reset value of the divisor register, whose value is used as the number of clock cycles 
+        needed per bit.
+    divisor_bits : int
+        Number of bits used to form the divisor value. 
+        If not None, the reset value of the divisor is 2**divisor_bits.
+    data_bits : int
+        Number of data bits per transfer.
+    parity : str
+        Parity mode. Must be either "none", "mark", "space", "even" or "odd"
+    pins : Record
+        Corresponding serial communication pins on board.
+
+    Attributes
+    ----------
+    divisor : Signal
+        Divisor register.
+    o : Signal()
+        Output pin.
+    data : Signal(data_bits)
+        Register storing the data to be sent went `ack` is asserted.
+    continuous : Signal()
+        Externally driven; no breaks between frames of transfer if asserted.
+        Useful if ACK stays high until the entire transmission has ended.
+        Resets to 0 (deasserted).
+    ack : Signal()
+        Externally driven, to indicate if transfer of data to transmit is enabled.
+    busy : Signal()
+        Internally driven, to indicate if there is an ongoing data transfer.
+    w_done : Signal()
+        Internally driven, to indicate if data has been transmitted.
     """
     def __init__(self, *, divisor, divisor_bits=None, data_bits=8, parity="none", pins=None):
         _check_parity(parity)
         self._parity = parity
 
         self.divisor = Signal(divisor_bits or bits_for(divisor), reset=divisor)
-        # tx.continuous: Externally driven; no breaks between transmission of "packets" if asserted
-        #                Useful if ACK stays high until the entire transmission has ended
         self.continuous = Signal(reset=0)
 
         self.data = Signal(data_bits)
-        # tx.ack: Externally driven, to indicate if transfer of data to transmit is enabled
         self.ack  = Signal()
-        # tx.busy: Internally driven, to indicate if there is an ongoing data transfer
         self.busy = Signal()
-        # tx.w_done: Internally driven, to indicate if data has been transmitted
         self.w_done  = Signal()
 
         self.o    = Signal(reset=1)
@@ -264,6 +324,32 @@ class AsyncSerialTX(Elaboratable):
 
 
 class AsyncSerial(Elaboratable):
+    """A full UART module. Receives and transmits the LSB first and MSB last.
+
+    Parameters
+    ----------
+    divisor : int
+        Reset value of the divisor register for both the receiver and transmitter, whose value is 
+        used as the number of clock cycles needed per bit.
+    divisor_bits : int
+        Number of bits used to form the divisor value. 
+        If not None, the reset value of the divisor is 2**divisor_bits.
+    data_bits : int
+        Number of data bits per transfer.
+    parity : str
+        Parity mode. Must be either "none", "mark", "space", "even" or "odd"
+    pins : Record
+        Corresponding serial communication pins on board.
+
+    Attributes
+    ----------
+    divisor : Signal
+        Divisor register.
+    rx : :class:`AsyncSerialRX`
+        UART receiver module.
+    tx : :class:`AsyncSerialTX`
+        UART transmission module.
+    """
     def __init__(self, *, divisor, divisor_bits=None, **kwargs):
         self.divisor = Signal(divisor_bits or bits_for(divisor), reset=divisor)
 
